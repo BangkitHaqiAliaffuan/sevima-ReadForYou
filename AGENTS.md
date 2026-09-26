@@ -64,7 +64,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Client-safe: `lib/tts/estimate.ts`. Pure helpers (`chunk-text.ts`, `validate-file.ts`, `api-error.ts`) must never import `synthesize.ts`.
 
 # API routes & TTS constraints
-- All `app/api/*/route.ts` must stay `runtime = 'nodejs'` + `dynamic = 'force-dynamic'` (msedge-tts needs WebSocket/Buffer; edge runtime breaks). Keep `maxDuration` 120 (process-document) / 30 (tts) — do not lower.
+- `process-document` and `tts` routes must stay `runtime = 'nodejs'` + `dynamic = 'force-dynamic'` (msedge-tts needs WebSocket/Buffer; edge runtime breaks). Keep `maxDuration` 120 (process-document) / 30 (tts) — do not lower. `voices` is the exception: `runtime = 'nodejs'` + `revalidate = 3600` (cached voice list, no `force-dynamic`).
 - TTS is per-sentence: one `POST /api/tts` per sentence, each ≤ `MAX_TTS_CHARS` (1000, see `lib/tts/synthesize.ts`). Voice must start with `id-ID-` (default `id-ID-ArdiNeural`); other locales are rejected as `INVALID_VOICE`.
 - `hooks/useServerAudio.ts` falls back to `speechSynthesis` after 3 consecutive TTS failures (`FAILURES_BEFORE_FALLBACK`) — keep that fallback path working.
 - Playback honesty is a correctness rule, not polish: `SpeechState` has `'stalled'`; `runQueue` counts `playedCount` and must NEVER report completion (`ended`/`onComplete`) when 0 sentences played — route to `onInterrupted` instead. Stall watchdog: frozen `currentTime` 10s (`STALL_AFTER_MS`); fetch ceiling 25s (`FETCH_CEILING_MS`). Generation is owned by `runQueue` only — `playSingle` verifies, never bumps.
@@ -76,7 +76,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # Validation, rate limits, errors
 - Files: client check (`validateFileOnClient`) is UX-only; server re-validates via magic bytes (`validateFileOnServer`) — never trust `File.type`. Keep both in sync.
-- Rate limiter is in-memory (`lib/rate-limit.ts`): extraction 20/min, TTS 120/min — use distinct `keyPrefix` per route (TTS is per-sentence, sharing a bucket starves extraction). Multi-instance deploys multiply the limit; swap file for Redis in production.
+- Rate limiter is in-memory (`lib/rate-limit.ts`): extraction defaults to 20/min (no prefix), TTS 120/min with `keyPrefix: 'tts'` — keep them on distinct buckets (TTS is per-sentence; sharing one starves extraction). Multi-instance deploys multiply the limit; swap file for Redis in production.
 - API errors go through `AppError` codes in `lib/api-error.ts` — reuse codes, don't invent ad-hoc shapes. `detail` arg is server-log only, never sent to client.
 
 # Accessibility contract (project's core requirement — do not regress)

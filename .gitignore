@@ -39,6 +39,9 @@ yarn-error.log*
 # local test docs (esai/contoh berkas untuk uji unggah manual, jangan commit)
 /docs/
 
+# kit persiapan hackathon (referensi desain, BUKAN bagian aplikasi)
+/war-kit/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

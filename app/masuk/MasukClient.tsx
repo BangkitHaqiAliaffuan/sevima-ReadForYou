@@ -6,8 +6,10 @@
  * Merakit ulang potongan yang sudah ada (LiveStatus + useSession +
  * AuthPanel) tanpa menduplikasi logika auth. Dua keputusan penting:
  *
- * 1. Redirect hanya bila pengguna SUDAH masuk dan ada tujuan `redirect`.
- *    Pengguna yang belum masuk tetap di halaman ini untuk melihat form.
+ * 1. Setelah berhasil masuk/daftar, pengguna SELALU dipantulkan keluar
+ *    dari halaman ini — ke `?redirect=` bila ada, atau ke beranda (`/`).
+ *    Tanpa jaminan ini, pengguna yang masuk otomatis akan terjebak di
+ *    halaman masuk dan mengira prosesnya gagal.
  * 2. Tidak ada heading/fokus-on-mount tambahan: judul dokumen dari
  *    metadata ("Masuk — AI ReadForYou") sudah diumumkan screen reader
  *    saat navigasi, dan AuthPanel punya h2 + fokus-saat-berhasil sendiri.
@@ -27,6 +29,9 @@ export interface MasukClientProps {
   redirectParam: string | null;
 }
 
+/** Tujuan default setelah masuk bila tidak ada `?redirect=` yang sah. */
+const DEFAULT_AFTER_LOGIN = '/';
+
 /**
  * Terima hanya path internal (`/...`). Tolak protokol absolut,
  * protocol-relative (`//evil`), dan string kosong — anti open-redirect.
@@ -45,21 +50,26 @@ export function MasukClient({ redirectParam }: MasukClientProps) {
   const router = useRouter();
   const redirectedRef = useRef(false);
 
-  const redirect = safeRedirect(redirectParam);
+  /* Tujuan akhir: `?redirect=` bila sah, selain itu beranda. */
+  const destination = safeRedirect(redirectParam) ?? DEFAULT_AFTER_LOGIN;
 
-  /* Pantulkan ke tujuan setelah masuk. Fokus-di-efek mengikuti kontrak
-     repo; navigasi di sini (bukan di handler AuthPanel) agar pengumuman
-     sukses sempat dikirim dulu. */
+  /*
+   * Pantulkan ke tujuan setelah masuk — SELALU, bukan hanya saat ada
+   * `?redirect=`. Fokus-di-efek mengikuti kontrak repo; navigasi di sini
+   * (bukan di handler AuthPanel) agar pengumuman sukses sempat dikirim.
+   */
   useEffect(() => {
     if (loading || redirectedRef.current) return;
     if (!user) return;
-    if (!redirect) return;
     redirectedRef.current = true;
-    announce('Berhasil masuk. Membawa Anda kembali ke halaman sebelumnya.', {
-      key: 'auth',
-    });
-    router.replace(redirect);
-  }, [user, loading, redirect, announce, router]);
+    announce(
+      destination === DEFAULT_AFTER_LOGIN
+        ? 'Berhasil masuk. Membawa Anda ke beranda.'
+        : 'Berhasil masuk. Membawa Anda kembali ke halaman sebelumnya.',
+      { key: 'auth' },
+    );
+    router.replace(destination);
+  }, [user, loading, destination, announce, router]);
 
   return (
     <>

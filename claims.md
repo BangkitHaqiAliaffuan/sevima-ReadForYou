@@ -54,7 +54,7 @@
 | `hooks/useSession.ts` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: `{ user, loading }`, `isAnonymous` dihapus. tsc/lint/build hijau |
 | `components/AuthPanel.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: hanya form email Masuk/Daftar (toggle), tombol "Lanjut tanpa masuk". Jalur tamu dihapus. Terverifikasi live di /masuk |
 | `components/Navbar.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: label 'Tamu' dihapus; tampil email atau Masuk/daftar |
-| `app/masuk/MasukClient.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: `isAnonymous` dihapus; redirect saat user login |
+| `app/masuk/MasukClient.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: `isAnonymous` dihapus; redirect SELALU setelah masuk (ke `?redirect=` atau beranda), tak lagi stuck di /masuk |
 | `app/masuk/page.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: metadata diperbarui (tanpa 'tamu') |
 | `components/DocumentHistory.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: CTA "Masuk" (bukan "Masuk sebagai tamu"). Terverifikasi live |
 | `app/page.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: komentar scope diperbarui (belum masuk vs sudah masuk) |

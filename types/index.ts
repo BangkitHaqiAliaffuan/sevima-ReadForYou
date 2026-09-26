@@ -162,6 +162,26 @@ export interface TtsErrorBody {
 }
 
 /* ============================================================
+ * API: /api/ask (tanya-jawab berbasis dokumen)
+ * ============================================================ */
+
+export interface AskRequest {
+  /** ID baris `documents`. DIUTAMAKAN — teks diambil server dari tabel. */
+  documentId?: string;
+  /** Fallback bila tanpa id (mis. bacaan dari riwayat): teks langsung. */
+  text?: string;
+  /** Nama dokumen untuk prompt (opsional, untuk penolakan jujur). */
+  docName?: string;
+  /** Pertanyaan pengguna, maks 500 karakter. */
+  question?: string;
+}
+
+export interface AskResponse {
+  /** Jawaban ringkas siap-dengar dalam Bahasa Indonesia. */
+  answer: string;
+}
+
+/* ============================================================
  * Status alur di UI
  * ============================================================ */
 

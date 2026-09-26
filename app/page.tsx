@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AudioPlayer } from '@/components/AudioPlayer';
 import { AuthPanel } from '@/components/AuthPanel';
+import { VoiceQA } from '@/components/VoiceQA';
 import { DocumentHistory } from '@/components/DocumentHistory';
 import { LiveStatus, StatusBanner } from '@/components/LiveStatus';
 import { ProgressBar, UploadModule } from '@/components/UploadModule';
@@ -63,6 +64,8 @@ export default function HomePage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [documentText, setDocumentText] = useState('');
   const [documentName, setDocumentName] = useState('');
+  /** ID baris `documents` untuk tanya-jawab; null bila tanpa id (riwayat). */
+  const [documentId, setDocumentId] = useState<string | null>(null);
   const [wordCount, setWordCount] = useState(0);
   const [warnings, setWarnings] = useState<string[]>([]);
   /** Posisi macet terakhir — menampilkan panel pemulihan. */
@@ -187,7 +190,15 @@ export default function HomePage() {
     onSentenceWaiting: handleSentenceWaiting,
   });
 
-  const { load: loadAudio } = audio;
+  const { load: loadAudio, pause: pauseDocument } = audio;
+
+  /**
+   * Jeda bacaan dokumen untuk sesi tanya (posisi tersimpan di hook,
+   * pengguna melanjutkan dengan Putar setelah jawaban selesai).
+   */
+  const handlePauseDocument = useCallback(() => {
+    pauseDocument();
+  }, [pauseDocument]);
   const {
     useFallbackVoice,
     retryMainService,
@@ -313,6 +324,7 @@ export default function HomePage() {
       setDocumentText('');
       setDocumentName(humanizeFileName(file.name));
       setWordCount(0);
+      setDocumentId(null);
       lastAnnouncedPercent.current = 0;
 
       try {
@@ -365,6 +377,8 @@ export default function HomePage() {
         if (!insertResult.error && insertResult.data) {
           documentId = insertResult.data.id;
         }
+        // Simpan id untuk tanya-jawab (null bila insert gagal → fallback teks).
+        setDocumentId(documentId);
         // Bila tabel belum dibuat, kita lanjut memakai filePath langsung.
         // Ini disengaja agar aplikasi tetap berfungsi pada tahap MVP.
 
@@ -445,6 +459,8 @@ export default function HomePage() {
       setDocumentText(item.text);
       setDocumentName(item.name);
       setWordCount(item.wordCount);
+      // Riwayat tak menyimpan id — tanya-jawab memakai fallback teks.
+      setDocumentId(null);
       setStage('ready');
       setReplaySignal((value) => value + 1);
       announce(
@@ -630,6 +646,21 @@ export default function HomePage() {
         onRetryMainService={handleRetryMainService}
         onReloadAudio={handleReloadAudio}
       />
+
+      {/* ================= Tanya dokumen ================= */}
+      {stage === 'ready' && documentText && (
+        <VoiceQA
+          documentId={documentId}
+          docText={documentText}
+          docName={documentName || 'dokumen'}
+          voice={audio.voice}
+          rate={audio.rate}
+          voices={voices}
+          voicesUnavailable={voicesUnavailable}
+          announce={announce}
+          onPauseDocument={handlePauseDocument}
+        />
+      )}
 
       {/* ================= Langkah 3: teks ================= */}
       <section aria-labelledby="hasil-heading" className="space-y-4">

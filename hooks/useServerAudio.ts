@@ -80,6 +80,10 @@ export interface UseServerAudioOptions {
    * "berbicara" dan dari "macet".
    */
   onSentenceWaiting?: (index: number, total: number) => void;
+  /** Suara awal (mis. disamakan dengan pemutar lain). Default Ardi. */
+  initialVoice?: string;
+  /** Kecepatan awal 0,5-2. Default 1. */
+  initialRate?: number;
 }
 
 export interface UseServerAudioResult {
@@ -196,8 +200,10 @@ export function useServerAudio(
   const [elapsedMs, setElapsedMs] = useState(0);
   const [totalMs, setTotalMs] = useState(0);
   const [usingFallback, setUsingFallback] = useState(false);
-  const [voice, setVoiceState] = useState('id-ID-ArdiNeural');
-  const [rate, setRateState] = useState(1);
+  const [voice, setVoiceState] = useState(
+    options.initialVoice ?? 'id-ID-ArdiNeural',
+  );
+  const [rate, setRateState] = useState(options.initialRate ?? 1);
   /** Berapa banyak kalimat yang audionya sudah dimuat. */
   const [readyCount, setReadyCount] = useState(0);
 

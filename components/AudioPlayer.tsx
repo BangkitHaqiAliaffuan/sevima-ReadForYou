@@ -62,6 +62,12 @@ export interface AudioPlayerProps {
   onRetryMainService: () => void;
   /** Buang dan ambil ulang audio kalimat kini. */
   onReloadAudio: () => void;
+  /**
+   * Judul seksi. Default "Pemutar suara". Wajib diisi berbeda bila dua
+   * pemutar tampil bersamaan (mis. jawaban Tanya Dokumen) agar screen
+   * reader tidak mendengar dua heading identik.
+   */
+  title?: string;
 }
 
 export function AudioPlayer(props: AudioPlayerProps) {
@@ -94,6 +100,7 @@ export function AudioPlayer(props: AudioPlayerProps) {
     onUseFallbackVoice,
     onRetryMainService,
     onReloadAudio,
+    title = 'Pemutar suara',
   } = props;
 
   const headingId = useId();
@@ -126,7 +133,7 @@ export function AudioPlayer(props: AudioPlayerProps) {
   return (
     <section aria-labelledby={headingId} className="space-y-5">
       <h2 id={headingId} className="text-2xl font-bold text-foreground">
-        Pemutar suara
+        {title}
       </h2>
 
       {/*

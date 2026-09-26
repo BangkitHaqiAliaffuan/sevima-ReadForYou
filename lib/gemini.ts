@@ -350,6 +350,90 @@ async function generateWithFallback(args: GenerateArgs): Promise<string> {
   );
 }
 
+/* ============================================================
+ * Teks bebas (tanya-jawab) — memakai ulang rantai model di atas
+ * ============================================================ */
+
+export interface GenerateTextOptions {
+  prompt: string;
+  temperature?: number;
+  maxOutputTokens?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Panggil model dengan rantai fallback untuk prompt teks bebas.
+ *
+ * Berbeda dari `generateWithFallback` (khusus ekstraksi dokumen biner +
+ * structured output), fungsi ini mengembalikan teks polos. Logika
+ * fallback (model mati → cadangan; transien → backoff + retry) dipakai
+ * ulang persis agar perilaku konsisten di semua jalur Gemini.
+ */
+export async function generateTextWithFallback(
+  options: GenerateTextOptions,
+): Promise<string> {
+  const chain = resolveModelChain();
+  const models = [chain.primary, ...chain.fallbacks];
+  const errors: string[] = [];
+
+  const internal = new AbortController();
+  const timeout = setTimeout(() => internal.abort(), REQUEST_TIMEOUT_MS);
+  const signal = options.signal ?? internal.signal;
+
+  try {
+    for (const model of models) {
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+        if (signal.aborted) throw new AppError('TIMEOUT');
+
+        try {
+          const parts: Part[] = [{ text: options.prompt }];
+
+          const response = await withAbort(
+            getClient().models.generateContent({
+              model,
+              contents: [{ role: 'user', parts }],
+              config: {
+                temperature: options.temperature ?? 0.3,
+                topP: 0.9,
+                maxOutputTokens: options.maxOutputTokens ?? 1024,
+              },
+            }),
+            signal,
+          );
+
+          const text = response.text;
+          if (!text || text.trim().length === 0) {
+            throw new Error('Model mengembalikan respons kosong.');
+          }
+          return text.trim();
+        } catch (err) {
+          if (signal.aborted) throw new AppError('TIMEOUT');
+
+          const message = err instanceof Error ? err.message : String(err);
+          errors.push(`${model}: ${message}`);
+
+          if (isModelNotFound(err)) {
+            // Model ini mati; pindah ke cadangan tanpa mencoba ulang.
+            break;
+          }
+          if (isTransient(err) && attempt < MAX_RETRIES) {
+            await backoff(attempt);
+            continue;
+          }
+          throw new AppError('UPSTREAM', message);
+        }
+      }
+    }
+
+    throw new AppError(
+      'MODEL_NOT_FOUND',
+      `Semua model gagal. Rincian: ${errors.join(' | ')}`,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
  * Bungkus promise dengan AbortSignal. SDK tidak selalu menghormati signal,
  * jadi kita menambahkan perlombaan (race) eksplisit agar timeout benar.

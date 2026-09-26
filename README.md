@@ -341,6 +341,12 @@ Aplikasi memakai tiga mode dalam satu alur:
    password })` sehingga uid dan riwayat tetap sama; perangkat lain
    memakai "Masuk dengan email" (`signInWithPassword`).
 
+Seluruh alur masuk tinggal di halaman khusus **`/masuk`**
+(`app/masuk/page.tsx`; mendukung `?redirect=` kembali setelah masuk
+permanen — hanya path internal `/...`, anti open-redirect). Beranda
+sengaja bersih dari UI auth; satu-satunya pintu dari beranda adalah
+tautan di pesan riwayat tamu.
+
 Prasyarat dasbor Supabase (sekali saja):
 
 1. **Authentication → Providers** → aktifkan **Anonymous Sign-Ins**

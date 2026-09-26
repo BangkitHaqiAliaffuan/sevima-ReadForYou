@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
+import { Navbar } from "@/components/Navbar";
+
 import "./globals.css";
 
 const geistSans = Geist({
@@ -60,10 +62,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         </a>
 
         <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 py-6 sm:px-6 lg:px-8">
-          <header className="mb-8 border-b-2 border-border pb-6">
-            <p className="text-sm font-semibold tracking-wide text-accent-dark uppercase">
-              AI ReadForYou
-            </p>
+          {/* Navbar (brand + status masuk) tepat setelah skip-link agar
+              tetap menjadi landmark pertama setelah lompatan. */}
+          <Navbar />
+
+          <header className="mt-6 mb-8 border-b-2 border-border pb-6">
             <h1 className="mt-1 text-3xl leading-tight font-bold text-foreground sm:text-4xl">
               Pembaca modul pelajaran untuk semua siswa
             </h1>

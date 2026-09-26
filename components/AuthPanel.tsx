@@ -30,11 +30,19 @@ export interface AuthPanelProps {
     message: string,
     options?: { priority?: 'polite' | 'assertive'; key?: string },
   ) => void;
+  /** Dipanggil saat pengguna memilih "Lanjut tanpa masuk". */
+  onDismiss?: () => void;
 }
 
-type FormMode = 'upgrade' | 'signin';
+type FormMode = 'upgrade' | 'signup' | 'signin';
 
-export function AuthPanel({ user, isAnonymous, loading, announce }: AuthPanelProps) {
+export function AuthPanel({
+  user,
+  isAnonymous,
+  loading,
+  announce,
+  onDismiss,
+}: AuthPanelProps) {
   const headingId = useId();
   const emailId = useId();
   const passwordId = useId();
@@ -126,6 +134,29 @@ export function AuthPanel({ user, isAnonymous, loading, announce }: AuthPanelPro
             'Akun Anda tersimpan. Bila diminta verifikasi, periksa email Anda lalu kembali ke halaman ini. Riwayat bacaan Anda tetap sama.',
             { key: 'auth' },
           );
+        } else if (mode === 'signup') {
+          /*
+           * Pendaftaran akun permanen BARU (uid baru, riwayat kosong).
+           * Bila "Confirm email" aktif di dashboard, signUp sukses TANPA
+           * sesi — pengguna harus klik tautan verifikasi dulu.
+           */
+          const { data, error } = await supabase.auth.signUp({
+            email: cleanEmail,
+            password,
+          });
+          if (error) throw error;
+          focusAfterAuthRef.current = true;
+          if (data.session) {
+            announce('Pendaftaran berhasil. Riwayat bacaan Anda mulai tersimpan.', {
+              key: 'auth',
+            });
+          } else {
+            announce(
+              'Pendaftaran diterima. Periksa email Anda dan klik tautan verifikasi, ' +
+                'lalu masuk dengan kata sandi Anda.',
+              { key: 'auth' },
+            );
+          }
         } else {
           const { error } = await supabase.auth.signInWithPassword({
             email: cleanEmail,
@@ -150,10 +181,17 @@ export function AuthPanel({ user, isAnonymous, loading, announce }: AuthPanelPro
         const supabase = getBrowserSupabase();
         const { error } = await supabase.auth.signOut();
         if (error) throw error;
-        setDismissed(false);
+        /*
+         * Model 2-sesi: semua orang selalu bersesi. Langsung buatkan anon
+         * baru agar tidak ada jendela tanpa sesi (guard otomatis di
+         * useSession sudah terpakai saat load, jadi buat manual di sini).
+         */
+        const { error: anonError } = await supabase.auth.signInAnonymously();
+        if (anonError) throw anonError;
+        focusAfterAuthRef.current = true;
         setEmail('');
         setPassword('');
-        announce('Anda keluar. Anda dapat masuk lagi sebagai tamu kapan pun.', {
+        announce('Anda keluar. Sesi tamu baru dibuat otomatis untuk Anda.', {
           key: 'auth',
         });
       } catch (err) {
@@ -184,58 +222,58 @@ export function AuthPanel({ user, isAnonymous, loading, announce }: AuthPanelPro
           Sedang memeriksa status masuk Anda.
         </p>
       ) : !user ? (
-        dismissed ? (
+        <div className="space-y-3">
+          {/*
+            Model 2-sesi: tanpa sesi = pembuatan sesi GAGAL (provider
+            nonaktif/jaringan), bukan pilihan. Sesi tamu normalnya sudah
+            dibuat otomatis oleh useSession — tombol ini hanya pemulihan.
+          */}
+          <p id={hintId} className="max-w-reading text-base text-muted">
+            Sesi tamu tidak dapat dibuat otomatis. Periksa sambungan
+            internet Anda, lalu coba lagi — atau masuk dengan akun email
+            di bawah.
+          </p>
           <div className="flex flex-wrap items-center gap-3">
-            <p className="text-base text-muted">
-              Anda melanjutkan tanpa masuk. Riwayat bacaan tidak akan tersimpan.
-            </p>
             <button
               type="button"
               onClick={handleGuestSignIn}
               aria-disabled={busy}
-              className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md border-2 border-accent px-5 py-2 text-base font-semibold text-accent hover:bg-accent/5"
+              aria-describedby={describedBy}
+              className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md bg-accent px-6 py-3 text-base font-semibold text-white hover:bg-accent-dark"
             >
               <UserIcon />
-              <span>{busy ? 'Memproses…' : 'Masuk sebagai tamu'}</span>
+              <span>{busy ? 'Memproses…' : 'Coba lagi'}</span>
             </button>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <p id={hintId} className="max-w-reading text-base text-muted">
-              Masuk sebagai tamu cukup satu ketukan, tanpa mengisi apa pun —
-              bacaan Anda tersimpan dan memiliki riwayat. Anda juga boleh
-              lanjut tanpa masuk, tetapi riwayat tidak akan tersimpan.
-            </p>
-            <div className="flex flex-wrap items-center gap-3">
+            {onDismiss && (
+              /*
+               * Jalan keluar satu-ketuk ketika pembuatan sesi gagal.
+               * Tanpa ini, pengguna hanya bisa menekan "Coba lagi" yang
+               * jelas akan gagal lagi, lalu terjebak di halaman ini.
+               * `dismissed` menyembunyikan form masuk akun lama di bawah
+               * agar tidak menawarkan jalur yang juga tidak akan berhasil.
+               */
               <button
                 type="button"
-                onClick={handleGuestSignIn}
+                onClick={() => {
+                  setDismissed(true);
+                  onDismiss();
+                }}
                 aria-disabled={busy}
-                aria-describedby={describedBy}
-                className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md bg-accent px-6 py-3 text-base font-semibold text-white hover:bg-accent-dark"
-              >
-                <UserIcon />
-                <span>{busy ? 'Memproses…' : 'Masuk sebagai tamu'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setDismissed(true)}
-                aria-disabled={busy}
-                className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-md border-2 border-border px-5 py-2 text-base font-semibold text-foreground hover:bg-subtle"
+                className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-md border-2 border-border px-5 py-3 text-base font-semibold text-foreground hover:bg-subtle"
               >
                 <span>Lanjut tanpa masuk</span>
               </button>
-            </div>
-            {formError && (
-              <p
-                id={errorId}
-                className="max-w-reading rounded-md border-2 border-danger bg-danger/5 px-4 py-3 text-base font-medium text-danger"
-              >
-                {formError}
-              </p>
             )}
           </div>
-        )
+          {formError && (
+            <p
+              id={errorId}
+              className="max-w-reading rounded-md border-2 border-danger bg-danger/5 px-4 py-3 text-base font-medium text-danger"
+            >
+              {formError}
+            </p>
+          )}
+        </div>
       ) : isAnonymous ? (
         <div className="space-y-3">
           <p id={hintId} className="max-w-reading text-base text-muted">
@@ -389,7 +427,7 @@ export function AuthPanel({ user, isAnonymous, loading, announce }: AuthPanelPro
  * Ubah galat mentah Supabase/Auth menjadi kalimat Indonesia yang menjelaskan
  * langkah berikutnya. Pesan ini final — langsung ditampilkan + diumumkan.
  */
-function translateAuthError(err: unknown): string {
+export function translateAuthError(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
   const message = raw.toLowerCase();
 

@@ -11,6 +11,7 @@
  */
 
 import { useCallback, useEffect, useId, useState } from 'react';
+import Link from 'next/link';
 
 import { getBrowserSupabase } from '@/lib/supabase';
 
@@ -44,8 +45,11 @@ export function DocumentHistory({ userId, onReplay, announce }: DocumentHistoryP
         </h2>
         <p className="max-w-reading text-base text-muted">
           Anda melanjutkan tanpa masuk, sehingga riwayat bacaan tidak
-          tersimpan. Masuk sebagai tamu di bagian atas halaman bila ingin
-          bacaan tersimpan otomatis.
+          tersimpan.{' '}
+          <Link href="/masuk" className="font-semibold text-accent underline">
+            Masuk sebagai tamu
+          </Link>{' '}
+          bila ingin bacaan tersimpan otomatis.
         </p>
       </section>
     );

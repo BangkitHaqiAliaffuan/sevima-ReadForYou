@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import Link from 'next/link';
 
-import { getBrowserSupabase } from '@/lib/supabase';
+import { getBrowserSupabase, STORAGE_BUCKET } from '@/lib/supabase';
 
 export interface HistoryItem {
   id: string;
@@ -86,6 +86,9 @@ function HistoryList({
   const [items, setItems] = useState<HistoryItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [replayingId, setReplayingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  /** Id baris yang sedang menunggu konfirmasi hapus (pola dua-langkah). */
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,6 +164,67 @@ function HistoryList({
     [replayingId, announce, onReplay],
   );
 
+  /**
+   * Hapus satu entri riwayat: berkas Storage dulu (best-effort), lalu
+   * baris database (otoritatif). Urutan ini sengaja — bila penghapusan
+   * baris gagal, berkasnya sudah hilang dan baris yatim akan terlihat
+   * aneh; sebaliknya, keberhasilan baris + kegagalan storage hanya
+   * menyisakan berkas tanpa rujukan (tidak tampak pengguna, dapat
+   * dibersihkan belakangan). Pengguna hanya peduli daftarnya hilang.
+   */
+  const handleDelete = useCallback(
+    (item: HistoryItem) => {
+      if (deletingId !== null) return;
+      setDeletingId(item.id);
+      setError(null);
+      announce(`Menghapus riwayat ${item.file_name}.`, { key: 'history' });
+      void (async () => {
+        try {
+          const supabase = getBrowserSupabase();
+
+          // Ambil dulu path berkas (kolom tidak ada di daftar).
+          const { data: row, error: fetchError } = await supabase
+            .from('documents')
+            .select('file_path')
+            .eq('id', item.id)
+            .maybeSingle<{ file_path: string | null }>();
+          if (fetchError) throw fetchError;
+
+          const filePath = row?.file_path;
+          if (filePath) {
+            /*
+             * Penghapusan berkas bersifat best-effort: kebijakan storage
+             * hanya mengizinkan pemilik menghapus; bila gagal, jangan
+             * gagalkan seluruh operasi — baris tetap dihapus di bawah.
+             */
+            await supabase.storage.from(STORAGE_BUCKET).remove([filePath]);
+          }
+
+          const { error: deleteError } = await supabase
+            .from('documents')
+            .delete()
+            .eq('id', item.id);
+          if (deleteError) throw deleteError;
+
+          setItems((current) =>
+            current ? current.filter((row2) => row2.id !== item.id) : current,
+          );
+          setConfirmingId(null);
+          announce(`Riwayat ${item.file_name} dihapus.`, { key: 'history' });
+        } catch {
+          const message =
+            `Riwayat ${item.file_name} tidak dapat dihapus. ` +
+            'Periksa sambungan internet Anda lalu coba lagi.';
+          setError(message);
+          announce(message, { priority: 'assertive', key: 'history-error' });
+        } finally {
+          setDeletingId(null);
+        }
+      })();
+    },
+    [deletingId, announce],
+  );
+
   return (
     <section aria-labelledby={headingId} className="space-y-4">
       <h2 id={headingId} className="text-2xl font-bold text-foreground">
@@ -206,17 +270,53 @@ function HistoryList({
                   {item.status !== 'ready' ? ` — status: ${item.status}` : ''}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => handleReplay(item)}
-                aria-disabled={replayingId !== null}
-                aria-label={`Bacakan lagi ${item.file_name}`}
-                className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-md border-2 border-accent px-5 py-2 text-base font-semibold text-accent hover:bg-accent/5"
-              >
-                <span>
-                  {replayingId === item.id ? 'Memuat…' : 'Bacakan lagi'}
-                </span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleReplay(item)}
+                  aria-disabled={replayingId !== null}
+                  aria-label={`Bacakan lagi ${item.file_name}`}
+                  className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-md border-2 border-accent px-5 py-2 text-base font-semibold text-accent hover:bg-accent/5"
+                >
+                  <span>
+                    {replayingId === item.id ? 'Memuat…' : 'Bacakan lagi'}
+                  </span>
+                </button>
+
+                {confirmingId === item.id ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(item)}
+                      aria-disabled={deletingId !== null}
+                      aria-label={`Konfirmasi hapus riwayat ${item.file_name}`}
+                      className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-md bg-danger px-4 py-2 text-base font-semibold text-white hover:bg-danger/90"
+                    >
+                      <span>
+                        {deletingId === item.id ? 'Menghapus…' : 'Ya, hapus'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingId(null)}
+                      aria-disabled={deletingId !== null}
+                      className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-md border-2 border-border px-4 py-2 text-base font-semibold text-foreground hover:bg-subtle"
+                    >
+                      <span>Batal</span>
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingId(item.id)}
+                    aria-disabled={deletingId !== null}
+                    aria-label={`Hapus riwayat ${item.file_name}`}
+                    className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-md border-2 border-danger px-4 py-2 text-base font-semibold text-danger hover:bg-danger/5"
+                  >
+                    <span>Hapus</span>
+                  </button>
+                )}
+              </div>
             </li>
           ))}
         </ul>

@@ -42,6 +42,9 @@ yarn-error.log*
 # kit persiapan hackathon (referensi desain, BUKAN bagian aplikasi)
 /war-kit/
 
+# dokumen aturan/administrasi hackathon (bukan bagian aplikasi)
+/rules.pdf
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

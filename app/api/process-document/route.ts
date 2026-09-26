@@ -135,7 +135,13 @@ export async function POST(request: NextRequest): Promise<Response> {
        * Verifikasi kepemilikan. Dokumen milik akun lain ditolak dengan
        * kode yang sama seperti "tidak ditemukan" agar keberadaannya tidak
        * bocor ke pemanggil yang salah. Baris legacy `user_id IS NULL`
-       * (dibuat tamu sebelum Auth ada) tetap dapat diproses tanpa sesi.
+       * (dibuat tanpa sesi) tetap dapat diproses tanpa sesi.
+       *
+       * CATATAN: klien yang SUDAH masuk selalu mengirim `documentId` milik
+       * barisnya sendiri (lihat app/page.tsx). Bila sesi server gagal
+       * terbaca (cookie), `sessionUserId` menjadi null dan baris ber-uid
+       * akan ditolak — mencegahnya, klien juga mengirim `filePath` sebagai
+       * cadangan (lihat penanganan di bawah).
        */
       if (data.user_id !== sessionUserId) {
         if (!(data.user_id === null && sessionUserId === null)) {
@@ -165,9 +171,17 @@ export async function POST(request: NextRequest): Promise<Response> {
       }
 
       /*
-       * Path langsung wajib berada di folder milik pemanggil: `<uid>/...`
-       * untuk yang masuk, `anonim/...` untuk tamu tanpa sesi. Ini menutup
-       * tebakan path lintas-akun pada mode fallback.
+       * Path langsung hanya boleh berasal dari folder milik pemanggil:
+       * `<uid>/...` untuk yang sudah masuk, `anonim/...` untuk yang belum.
+       *
+       * CATATAN PENTING: mode ini adalah jalur fallback yang dipakai HANYA
+       * ketika baris `documents` tidak tersedia (insert gagal / tabel
+       * belum dibuat). Karena `sessionUserId` di server berasal dari
+       * cookie dan bisa gagal terbaca, klien yang SUDAH masuk tetapi
+       * terlihat null di sini akan ditolak meski berkasnya sah — inilah
+       * akar galat "berkas tidak ditemukan". Untuk itu klien kini
+       * mengirim `documentId` bila memungkinkan; jalur ini hanya
+       * menyentuh unggahan tanpa baris DB (mis. pengguna belum masuk).
        */
       const expectedPrefix = sessionUserId ? `${sessionUserId}/` : 'anonim/';
       if (!filePath.startsWith(expectedPrefix)) {

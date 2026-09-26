@@ -65,7 +65,6 @@
 | `app/page.tsx` | done | 2026-09-26-ux-polish | 2026-09-26 | Highlight kalimat → putih di bg-accent (WCAG AA); hapus progress bar ekstraksi; GUARD duplikat (findExistingDocument); insert gagal = galat jujur; retry ekstraksi via filePath saat NO_FILE |
 | `components/DocumentHistory.tsx` | done | 2026-09-26-ux-polish | 2026-09-26 | Tombol Hapus per entri + konfirmasi dua-langkah; hapus berkas Storage (best-effort) + baris DB |
 | `app/api/process-document/route.ts` | done | 2026-09-26-ux-polish | 2026-09-26 | Dokumentasi akar galat "berkas tidak ditemukan" (sesi server null vs path uid) |
-| `README.md` | done | 2026-09-26-ux-polish | 2026-09-26 | Sinkronkan bagian Autentikasi ke model email-only |
 | `.gitignore` | done | 2026-09-26-ux-polish | 2026-09-26 | Abaikan /rules.pdf |
 | `components/UploadModule.tsx` | blocked | 2026-09-26-a11y-audit | 2026-09-26 | A1 TERTUNDA: klaim aktif milik `2026-09-26-ux-accessible-flow` (app/page.tsx sedang diedit 14:26) → TIDAK menyentuh. Fix siap: hapus `disabled={busy}` di :198 |
 | `components/AudioPlayer.tsx` | blocked | 2026-09-26-a11y-audit | 2026-09-26 | A3 TERTUNDA: klaim aktif milik `2026-09-26-ux-accessible-flow` → TIDAK menyentuh. Fix siap: hapus `keyShortcut="Alt+P"` ganda di :198 |

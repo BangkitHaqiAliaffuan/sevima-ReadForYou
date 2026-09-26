@@ -28,7 +28,7 @@ import { AudioPlayer } from '@/components/AudioPlayer';
 import { VoiceQA } from '@/components/VoiceQA';
 import { DocumentHistory } from '@/components/DocumentHistory';
 import { LiveStatus, StatusBanner } from '@/components/LiveStatus';
-import { ProgressBar, UploadModule } from '@/components/UploadModule';
+import { UploadModule } from '@/components/UploadModule';
 import { useAnnouncer } from '@/hooks/useAnnouncer';
 import { useServerAudio } from '@/hooks/useServerAudio';
 import { useSession } from '@/hooks/useSession';
@@ -323,23 +323,56 @@ export default function HomePage() {
       if (busyRef.current) return;
       busyRef.current = true;
 
-      clear();
-      setErrorMessage(null);
-      setWarnings([]);
-      setStalledInfo(null);
-      setDocumentText('');
-      setDocumentName(humanizeFileName(file.name));
-      setWordCount(0);
-      setDocumentId(null);
-      lastAnnouncedPercent.current = 0;
+      /* Nama yang dinormalisasi untuk pencocokan riwayat. */
+      const cleanName = humanizeFileName(file.name);
 
       try {
+        /*
+         * GUARD DUPLIKAT: bila berkas dengan nama sama sudah pernah
+         * diproses oleh akun ini, JANGAN unggah ulang — muat yang lama.
+         * Ini menghindari (a) berkas ganda di Storage + riwayat, dan
+         * (b) galat "berkas tidak ditemukan" yang muncul bila unggahan
+         * ulang tidak sinkron dengan baris lama.
+         */
+        if (sessionUserId) {
+          const existing = await findExistingDocument(sessionUserId, cleanName);
+          if (existing) {
+            clear();
+            setErrorMessage(null);
+            setWarnings([]);
+            setStalledInfo(null);
+            setDocumentText(existing.text);
+            setDocumentName(existing.fileName);
+            setWordCount(countWords(existing.text));
+            setDocumentId(existing.id);
+            setStage('ready');
+            setReplaySignal((value) => value + 1);
+            announce(
+              `Berkas ${existing.fileName} sudah pernah diproses. ` +
+                `Menampilkan hasil yang tersimpan agar tidak diunggah ulang. ` +
+                `Pemutar suara siap digunakan.`,
+              { key: 'status' },
+            );
+            return;
+          }
+        }
+
+        clear();
+        setErrorMessage(null);
+        setWarnings([]);
+        setStalledInfo(null);
+        setDocumentText('');
+        setDocumentName(cleanName);
+        setWordCount(0);
+        setDocumentId(null);
+        lastAnnouncedPercent.current = 0;
+
         /* ---------- Tahap 1: unggah ---------- */
         setStage('uploading');
         setUploadPercent(0);
 
         announce(
-          `Mulai mengunggah berkas ${humanizeFileName(file.name)}, ` +
+          `Mulai mengunggah berkas ${cleanName}, ` +
             `berukuran ${formatMegabytes(file.size)}.`,
           { key: 'status' },
         );
@@ -381,13 +414,28 @@ export default function HomePage() {
           .select('id')
           .maybeSingle<{ id: string }>();
 
-        if (!insertResult.error && insertResult.data) {
+        /*
+         * Bila pengguna SUDAH masuk, baris `documents` wajib ada: itulah
+         * sumber riwayat DAN kunci kepemilikan saat ekstraksi. Bila insert
+         * gagal (mis. RLS/skema), kita hentikan dengan pesan jujur daripada
+         * diam-diam jatuh ke mode `filePath` yang rapuh (bisa memicu
+         * "berkas tidak ditemukan" karena sesi server tak terbaca).
+         *
+         * Untuk pengguna BELUM masuk, kegagalan insert tidak fatal —
+         * aplikasi tetap memproses lewat `filePath` (tanpa riwayat).
+         */
+        if (insertResult.error) {
+          if (sessionUserId) {
+            throw new Error(
+              'Dokumen tidak dapat dicatat ke akun Anda, sehingga riwayat ' +
+                'tidak dapat disimpan. Silakan coba lagi sebentar lagi.',
+            );
+          }
+        } else if (insertResult.data) {
           documentId = insertResult.data.id;
         }
-        // Simpan id untuk tanya-jawab (null bila insert gagal → fallback teks).
+        // Simpan id untuk tanya-jawab (null bila belum masuk / insert lewat).
         setDocumentId(documentId);
-        // Bila tabel belum dibuat, kita lanjut memakai filePath langsung.
-        // Ini disengaja agar aplikasi tetap berfungsi pada tahap MVP.
 
         announce(
           'Berkas berhasil diunggah. Sekarang sistem mulai memproses teks.',
@@ -609,10 +657,6 @@ export default function HomePage() {
             </div>
           )}
 
-          {stage === 'extracting' && uploadPercent !== null && (
-            <ProgressBar percent={uploadPercent} label="Progres ekstraksi teks" />
-          )}
-
           {/* Riwayat bacaan */}
           <DocumentHistory
             userId={sessionUserId}
@@ -810,9 +854,9 @@ export default function HomePage() {
                       aria-current={isActive ? 'true' : undefined}
                       aria-label={`Kalimat ${chunk.index + 1}: ${chunk.text}. Tekan Enter untuk membacakan.`}
                       className={[
-                        'inline rounded-md px-1 py-0.5 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                        'inline rounded-md px-1 py-0.5 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2',
                         isActive
-                          ? 'bg-amber-100 font-semibold text-foreground ring-2 ring-accent/60 shadow-xs'
+                          ? 'bg-accent font-semibold text-white ring-2 ring-accent-dark shadow-xs'
                           : 'hover:bg-subtle text-foreground/90',
                       ].join(' ')}
                     >
@@ -917,10 +961,34 @@ async function requestExtraction(
   documentId: string | null,
   filePath: string,
 ): Promise<ProcessDocumentResponse> {
+  /*
+   * Jalur utama: `documentId` (paling aman — server memverifikasi
+   * kepemilikan lewat baris database). Bila gagal dengan NO_FILE —
+   * yang dapat terjadi ketika sesi server tidak terbaca cookie
+   * (lihat catatan di route) — coba sekali lagi memakai `filePath`
+   * yang diketahui klien. Ini memulihkan unggahan yang sah tanpa
+   * melonggarkan pemeriksaan kepemilikan di server.
+   */
+  if (documentId) {
+    try {
+      return await postExtraction({ documentId });
+    } catch (err) {
+      if (!isNotFoundError(err)) throw err;
+      // lanjut ke cadangan filePath di bawah
+    }
+  }
+
+  return postExtraction({ filePath });
+}
+
+/** Satu panggilan mentah ke /api/process-document. */
+async function postExtraction(
+  payload: { documentId: string } | { filePath: string },
+): Promise<ProcessDocumentResponse> {
   const response = await fetch('/api/process-document', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(documentId ? { documentId } : { filePath }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
@@ -936,13 +1004,86 @@ async function requestExtraction(
       body = null;
     }
 
-    const message =
+    const error = new ExtractionError(
+      body?.error.code ?? null,
       body?.error.message ??
-      `Permintaan gagal dengan status ${response.status}. Silakan coba lagi.`;
-    throw new Error(message);
+        `Permintaan gagal dengan status ${response.status}. Silakan coba lagi.`,
+    );
+    throw error;
   }
 
   return (await response.json()) as ProcessDocumentResponse;
+}
+
+/** Galat ekstraksi yang membawa kode dari `ApiErrorBody` untuk pencabangan. */
+class ExtractionError extends Error {
+  constructor(
+    public readonly code: string | null,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ExtractionError';
+  }
+}
+
+/** True bila galat menandakan dokumen/berkas tidak ditemukan. */
+function isNotFoundError(err: unknown): boolean {
+  if (err instanceof ExtractionError) return err.code === 'NO_FILE';
+  return /tidak ditemukan|not found/i.test(
+    err instanceof Error ? err.message : '',
+  );
+}
+
+/* ============================================================
+ * Guard duplikat
+ * ============================================================ */
+
+/**
+ * Cari dokumen milik pengguna yang sudah selesai diproses dengan nama
+ * tampilan yang sama. Mengembalikan teks tersimpan agar unggahan ulang
+ * dapat dilewati sepenuhnya.
+ *
+ * Sengaja cocok berdasarkan `file_name` (bukan nama mentah) karena itulah
+ * yang ditampilkan di riwayat, dan `humanizeFileName` sudah menyamakan
+ * variasi seperti `modul_1.pdf` vs `modul 1.pdf`. Bila ada beberapa,
+ * ambil yang paling baru.
+ */
+async function findExistingDocument(
+  userId: string,
+  fileName: string,
+): Promise<{ id: string; fileName: string; text: string } | null> {
+  try {
+    const supabase = getBrowserSupabase();
+    const { data, error } = await supabase
+      .from('documents')
+      .select('id, file_name, extracted_text')
+      .eq('user_id', userId)
+      .eq('file_name', fileName)
+      .not('extracted_text', 'is', null)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle<{
+        id: string;
+        file_name: string;
+        extracted_text: string | null;
+      }>();
+
+    if (error || !data) return null;
+
+    const text = data.extracted_text?.trim() ?? '';
+    if (text.length === 0) return null;
+
+    return { id: data.id, fileName: data.file_name, text };
+  } catch {
+    // Kegagalan pencarian bukan alasan menggagalkan unggah — lanjut saja.
+    return null;
+  }
+}
+
+/** Hitung kata — selaras dengan penghitung server (regex Unicode). */
+function countWords(text: string): number {
+  const matches = text.match(/[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu);
+  return matches ? matches.length : 0;
 }
 
 /* ============================================================

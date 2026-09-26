@@ -41,18 +41,44 @@ export const STORAGE_BUCKET =
  * Validasi lingkungan
  * ============================================================ */
 
-function readEnv(name: string): string | undefined {
-  const value = process.env[name];
+/**
+ * Baca satu nilai env dan normalisasi string kosong menjadi undefined.
+ */
+function trimValue(value: string | undefined): string | undefined {
   if (!value || value.trim().length === 0) return undefined;
   return value.trim();
+}
+
+/**
+ * CATATAN BUNDLER — JANGAN refactor fungsi-fungsi di bawah menjadi
+ * `readEnv(name: string)` generik dengan `process.env[name]`.
+ *
+ * Turbopack/webpack hanya meng-inline `process.env` ke bundle browser
+ * bila kuncinya ditulis literal (`process.env.NEXT_PUBLIC_X`). Akses
+ * komputasi (`process.env[name]`) tidak dapat dianalisis saat compile,
+ * sehingga SELALU `undefined` di browser — dan FILE INI diimpor oleh
+ * Client Component (`app/page.tsx`), sehingga polanya wajib literal.
+ * Di server (Node) kedua pola bekerja karena `process.env` asli tersedia.
+ */
+function readPublicEnv(): { url?: string; anonKey?: string } {
+  return {
+    url: trimValue(process.env.NEXT_PUBLIC_SUPABASE_URL),
+    anonKey: trimValue(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+  };
+}
+
+function readServiceEnv(): { url?: string; serviceKey?: string } {
+  return {
+    url: trimValue(process.env.NEXT_PUBLIC_SUPABASE_URL),
+    serviceKey: trimValue(process.env.SUPABASE_SERVICE_ROLE_KEY),
+  };
 }
 
 function assertPublicEnv(): {
   url: string;
   anonKey: string;
 } {
-  const url = readEnv('NEXT_PUBLIC_SUPABASE_URL');
-  const anonKey = readEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY');
+  const { url, anonKey } = readPublicEnv();
 
   const missing: string[] = [];
   if (!url) missing.push('NEXT_PUBLIC_SUPABASE_URL');
@@ -88,8 +114,7 @@ function assertServerOnly(): void {
 function assertServiceEnv(): { url: string; serviceKey: string } {
   assertServerOnly();
 
-  const url = readEnv('NEXT_PUBLIC_SUPABASE_URL');
-  const serviceKey = readEnv('SUPABASE_SERVICE_ROLE_KEY');
+  const { url, serviceKey } = readServiceEnv();
 
   if (!url || !serviceKey) {
     throw new Error(

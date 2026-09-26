@@ -368,8 +368,15 @@ export interface GenerateTextOptions {
  * structured output), fungsi ini mengembalikan teks polos. Logika
  * fallback (model mati → cadangan; transien → backoff + retry) dipakai
  * ulang persis agar perilaku konsisten di semua jalur Gemini.
+ *
+ * NAMA: fungsi ini kini bernama `generateTextWithGemini` karena ia hanya
+ * menangani penyedia Gemini. Titik masuk aplikasi yang memilih di antara
+ * Gemini dan 9router ada di `lib/llm.ts` (`generateTextWithFallback`).
+ * Pemisahan ini disengaja: `lib/llm.ts` tidak menyalin logika rantai model
+ * di bawah, ia memanggilnya, sehingga perbaikan di sini berlaku untuk
+ * kedua jalur.
  */
-export async function generateTextWithFallback(
+export async function generateTextWithGemini(
   options: GenerateTextOptions,
 ): Promise<string> {
   const chain = resolveModelChain();
@@ -595,8 +602,13 @@ async function extractSingle(
  *
  * Setiap bagian dilaporkan melalui `onChunk` agar UI dapat mengumumkan
  * progres kepada pengguna screen reader.
+ *
+ * NAMA: fungsi ini kini bernama `extractDocumentWithGemini`. Nama lama
+ * (`extractDocument`) sengaja tidak dipertahankan sebagai alias agar tidak
+ * ada titik panggil yang tanpa sadar melewati jalur fallback 9router →
+ * Gemini di `lib/llm.ts`.
  */
-export async function extractDocument(
+export async function extractDocumentWithGemini(
   options: ExtractOptions,
 ): Promise<ExtractionResult> {
   const warnings: string[] = [];

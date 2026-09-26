@@ -9,30 +9,48 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 <!-- END:nextjs-agent-rules -->
 
 # Commands
-- `npm run dev` — dev server (regenerates block above; commit it with work)
-- `npm run build` / `npm start` — production build / serve
-- `npm run lint` — eslint (flat config, `eslint-config-next` core-web-vitals + typescript)
-- Typecheck: `npx tsc --noEmit` (no `typecheck`/`test` script, no test runner, no CI)
+- `npm run dev` / `npm run build` / `npm start`; `npm run lint` (flat config, `eslint-config-next`)
+- No `typecheck`/`test` script, no test runner, no CI. Typecheck: `npx tsc --noEmit`
 - Full verification before declaring done: `npx tsc --noEmit && npm run lint && npm run build`
-- Probes (need network / live keys, run manually, never in build):
-  `node --experimental-strip-types scripts/probe-tts.mts` (Edge TTS + Indonesian voices),
-  `... scripts/probe-gemini.mts`, `... scripts/probe-supabase.mts`, `... scripts/probe-supabase-deep.mts`
+- Probes need network + live keys, run manually, never in build:
+  `node --experimental-strip-types scripts/probe-{tts,gemini,supabase,supabase-deep}.mts`
 
-# Structure
-- App Router: `app/layout.tsx`, `app/page.tsx`, `app/api/{process-document,tts,voices}/route.ts`
-- `components/UploadModule.tsx`, `components/AudioPlayer.tsx`, `components/LiveStatus.tsx`, `components/AuthPanel.tsx`, `components/DocumentHistory.tsx`
-- `hooks/useServerAudio.ts` (sentence queue + preload + speechSynthesis fallback), `hooks/useAnnouncer.ts`, `hooks/useSession.ts` (sole auth-state source)
-- `middleware.ts` (Supabase cookie session refresh; never blocks guests)
-- `lib/supabase.ts`, `lib/gemini.ts`, `lib/rate-limit.ts`, `lib/chunk-text.ts`, `lib/validate-file.ts`, `lib/api-error.ts`, `lib/tts/{synthesize,estimate}.ts`
-- Path alias: `@/*` → repo root (`./*`), per `tsconfig.json`
-- Styling: Tailwind v4 — `@import "tailwindcss"` in `app/globals.css` (NO `tailwind.config.ts` — v4 ignores it)
-- Stack: Next 16.3.6, React 19, TS strict. Keep `LayoutProps<"/">` on root layout (Next 16 convention).
-- Supabase DDL + RLS + bucket lives in `supabase/schema.sql` — run whole file in SQL Editor on new project.
+# Structure (non-obvious only)
+- `app/api/process-document/route.ts` = Gemini extraction; `tts/route.ts` = per-sentence synthesis; `voices/route.ts` = cached Indonesian voice list
+- `hooks/useSession.ts` is the sole auth-state source; `hooks/useServerAudio.ts` owns the sentence queue + preload + `speechSynthesis` fallback; `middleware.ts` only refreshes Supabase cookies, never blocks guests
+- `@/*` → repo root (`./*`), not `./src/*`. Tailwind v4: `@import "tailwindcss"` in `app/globals.css`, no `tailwind.config.ts`
+- Next 16: keep `LayoutProps<"/">` on root layout. Supabase DDL + RLS + bucket: run whole `supabase/schema.sql`, then `supabase/migration_auth_anon.sql`, in SQL Editor on new projects
+
+# Stale prose (trust code over these)
+- `README.md` §"Keputusan..." point 1 ("berjalan tanpa autentikasi") is pre-auth — auth exists now, see Auth model below.
+- `lib/supabase.ts` header comments ("MVP belum memakai Auth", "disiapkan untuk saat Auth ditambahkan") are stale — the cookie-based route-handler client is live and used.
+
+# Provider LLM (9router saat dev → Gemini sebagai jaring)
+- Titik masuk tunggal: `lib/llm.ts` — `extractDocumentWithFallback` (dokumen) & `generateTextWithFallback` (teks bebas, dipakai `lib/qa.ts`). `*Detailed` mengembalikan metadata provider. Jangan panggil `lib/gemini.ts` langsung dari route: nama `*WithGemini` menandai "ini satu lapis provider", bukan "ini seluruh app".
+- Urutan provider dari `LLM_PROVIDER_ORDER` (default `9router,gemini`), dibaca kiri-ke-kanan. Provider yang kuncinya kosong **dilewati**, bukan menggagalkan permintaan → app tetap jalan dari clone bersih (Gemini-only) atau tanpa Gemini (9router-only).
+- 9router = gateway OpenAI-compatible via `fetch` ke `LLM_BASE_URL` (`/chat/completions`). **Tidak memakai SDK OpenAI** — sengaja, hanya satu rute & bentuk permintaan sederhana.
+
+# CRITICAL: 9router TIDAK bisa baca PDF — render dulu ke gambar
+- Endpoint `chat/completions` hanya menerima **GAMBAR** di `image_url`. PDF di `image_url` → `400 model_param_invalid`.
+- Part `file`, `file_data`, dan `input_file` semuanya **diterima HTTP 200 tapi isinya TIDAK sampai ke model**: model menjawab "berkas tidak dilampirkan" atau, lebih berbahaya, **MENGARANG** isi dokumen dengan yakin. Tidak ada error yang muncul — ini kegagalan senyap.
+- Karena itu `lib/llm.ts` merender PDF → PNG per halaman lebih dulu (`lib/pdf-render.ts`, `pdftoppm`/Poppler) dan mengirim tiap halaman sebagai `image_url` + `image/png`. Ini **bukan optimasi**, syarat agar AI-nya bisa dipakai.
+- Gambar asli (JPG/PNG/WEBP) dikirim langsung tanpa render — jalur itu memang bekerja.
+- Bila `pdftoppm` tidak ada, `renderPdfPages` melempar `AppError('CONFIG')` dengan instruksi pemasangan; provider chain lalu jatuh ke Gemini yang menerima PDF native. **Jangan** kembalikan perilaku "kirim PDF apa adanya ke 9router".
+- Bukti lengkap: `scripts/probe-9router-pdf.py` (A: image_url 400 · B: file kosong · C: file_data mengarang · D: PNG ok).
+- Batas halaman render: `MAX_RENDERED_PAGES` (40) di `lib/pdf-render.ts`; DPI 150.
+
+# Diagnostik: pesan error TIDAK boleh buta
+- `AppError.toBody()` mengisi `debug` (rincian penyebab) **hanya bila `NODE_ENV !== 'production'`**. Di produksi `detail` tetap tersembunyi — jangan hapus gerbang itu.
+- `lib/llm.ts` mengklasifikasikan galat jadi `FailureReason`: `quota` | `auth` | `network` | `bad-request` | `missing-key` | `timeout` | `empty` | `unknown`, dan `describeFailure()` merangkainya jadi pesan multi-baris yang bisa ditindaklanjuti. Ini yang mengubah "AI bermasalah" menjadi "9router: jaringan mati · gemini: kuota habis".
+- Klasifikasi WAJIB menelusuri `err.cause` berantai (`collectErrorText`), bukan hanya `err.message`.
+- Diagnostik: `curl -X POST localhost:3000/api/llm/test` (teks) dan `curl -X POST 'localhost:3000/api/llm/test?mode=extract'` (menjalankan pipeline ekstraksi nyata). Aktif bila `NODE_ENV !== 'production'` atau `ALLOW_LLM_TEST=1`; balas 404 di luar itu.
+- `AppError` menyimpan `detail` sebagai field publik; `ERROR_SPECS[code].message` tetap pesan ramah untuk pengguna. Jangan pernah memakai `detail` sebagai pesan yang dibacakan.
+- **Ketergantungan sistem:** Poppler (`pdftoppm`) harus terpasang di server untuk ekstraksi PDF via 9router: `sudo apt install poppler-utils`. Tidak ada di `package.json` karena ini biner sistem, bukan paket npm.
 
 # Env & secrets
 - Setup: `cp .env.local.example .env.local`, fill Supabase URL/anon key + `SUPABASE_SERVICE_ROLE_KEY` + `GEMINI_API_KEY`; `.env*` is gitignored, never commit.
-- `SUPABASE_SERVICE_ROLE_KEY` and `GEMINI_API_KEY` are SERVER ONLY — never add `NEXT_PUBLIC_` prefix. `lib/supabase.ts:assertServerOnly` throws if service client is called from browser.
-- Model chain is env-driven: `GEMINI_MODEL` + `GEMINI_FALLBACK_MODELS` (+ `MAX_CHUNKS_PER_DOCUMENT`). No TTS key exists — `msedge-tts` uses Edge Read Aloud WebSocket directly.
+- `SUPABASE_SERVICE_ROLE_KEY` and `GEMINI_API_KEY` are SERVER ONLY — never add `NEXT_PUBLIC_` prefix. `lib/supabase.ts:assertServerOnly` throws if the service client is called from the browser.
+- Model chain is env-driven: `GEMINI_MODEL` + `GEMINI_FALLBACK_MODELS` (+ `MAX_CHUNKS_PER_DOCUMENT`). No TTS key exists — `msedge-tts` uses the Edge Read Aloud WebSocket directly.
 - Bucket `modules` is private, 20 MB cap, PDF/JPEG/PNG/WEBP only — must match `MAX_FILE_BYTES` in `lib/validate-file.ts`. Bucket name overridable via `SUPABASE_BUCKET` / `NEXT_PUBLIC_SUPABASE_BUCKET` (`lib/supabase.ts:STORAGE_BUCKET`).
 
 # CRITICAL: process.env must use literal keys in browser-reachable code

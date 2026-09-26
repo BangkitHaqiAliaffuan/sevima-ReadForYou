@@ -55,6 +55,56 @@ GEMINI_MODEL=gemini-3.8-flash
 > **Fitur suara tidak butuh kunci.** `msedge-tts` memakai API Read Aloud
 > Microsoft Edge secara langsung, jadi tidak ada variabel lingkungan untuk TTS.
 
+### 4b. (Opsional) Pakai 9router saat development
+
+Selama pengembangan, aplikasi dapat memanggil sebuah gateway
+OpenAI-compatible (9router) lebih dulu, dengan Gemini otomatis mengambil
+alih bila gateway itu bermasalah. Tambahkan ke `.env.local`:
+
+```bash
+LLM_API_KEY=sk-...
+LLM_BASE_URL=http://localhost:20128/v1
+LLM_MODEL=cbai/deepseek-v4.1-flash
+LLM_PROVIDER_ORDER=9router,gemini
+```
+
+Biarkan `LLM_API_KEY` kosong (atau hapus keempat barisnya) untuk memakai
+Gemini saja — perilaku produksi. Urutan `LLM_PROVIDER_ORDER` dibaca
+kiri-ke-kanan; provider yang kuncinya kosong akan dilewati, bukan
+menggagalkan permintaan.
+
+Model yang dipilih untuk `LLM_MODEL` **harus** menerima gambar (vision)
+dan mematuhi `response_format: json_object`, karena ekstraksi dokumen
+mengirim berkas biner dan mengharapkan balasan JSON.
+
+Untuk memastikan jalurnya benar-benar hidup tanpa mengunggah dokumen:
+
+```bash
+curl -X POST http://localhost:3000/api/llm/test
+curl -X POST 'http://localhost:3000/api/llm/test?mode=extract'
+```
+
+Rute itu hanya aktif saat bukan produksi, atau bila `ALLOW_LLM_TEST=1`.
+
+**Penting soal PDF:** gateway hanya bisa membaca **gambar**, bukan PDF.
+Karena itu aplikasi merender PDF menjadi gambar per halaman lebih dulu
+(memakai `pdftoppm` dari paket Poppler). Pasang lebih dulu:
+
+```bash
+sudo apt install poppler-utils     # Debian/Ubuntu
+brew install poppler              # macOS
+```
+
+Bila Poppler tidak terpasang, ekstraksi PDF otomatis dialihkan ke Gemini
+(yang memang menerima PDF secara native) — aplikasi tetap jalan, tetapi
+kuota Gemini terpakai.
+
+**Bila muncul "Layanan kecerdasan buatan sedang bermasalah":** jalankan
+`POST /api/llm/test` di atas. Responsnya memuat field `error.cause` yang
+menyebutkan penyebab sebenarnya per provider (kuota habis, kunci ditolak,
+jaringan mati, atau bentuk permintaan ditolak). Saat produksi
+(`NODE_ENV=production`) rincian itu sengaja tidak dikirim.
+
 ### 5. Jalankan
 
 ```bash

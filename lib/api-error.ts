@@ -75,6 +75,8 @@ export class AppError extends Error {
   public readonly code: ApiErrorCode;
   public readonly retryable: boolean;
   public readonly httpStatus: number;
+  /** Rincian teknis untuk log; hanya dipakai `debug` di luar produksi. */
+  public readonly detail?: string;
 
   constructor(code: ApiErrorCode, detail?: string) {
     const spec = ERROR_SPECS[code];
@@ -84,17 +86,50 @@ export class AppError extends Error {
     this.code = code;
     this.retryable = spec.retryable;
     this.httpStatus = spec.status;
+    this.detail = detail;
   }
 
-  /** Bentuk aman untuk dikirim ke klien (tanpa detail internal). */
+  /**
+   * Bentuk aman untuk dikirim ke klien (tanpa detail internal).
+   *
+   * PENYIMPANGAN YANG DISENGAJA SAAT DEVELOPMENT
+   * --------------------------------------------
+   * Di produksi, `detail` (mis. "kuota habis", "kunci ditolak", nama
+   * instance provider) HARUS disembunyikan — itu benar dan tetap berlaku.
+   *
+   * Tetapi perilaku yang sama membuat penelusuran saat development buta:
+   * pengguna dan pengembang hanya melihat "Layanan kecerdasan buatan
+   * sedang bermasalah" tanpa cara mengetahui penyebabnya. Karena itu, bila
+   * `NODE_ENV` BUKAN 'production', `detail` ikut dikirim pada field
+   * `debug` yang terpisah. Pemanggil dapat mengabaikannya; alat uji dan
+   * konsol pengembang dapat membacanya.
+   *
+   * Jadikan produksi (NODE_ENV=production) untuk mematikan perilaku ini.
+   */
   toBody(): ApiErrorBody {
-    return {
+    const body: ApiErrorBody = {
       error: {
         code: this.code,
         message: ERROR_SPECS[this.code].message,
         retryable: this.retryable,
       },
     };
+
+    if (process.env.NODE_ENV !== 'production' && this.debugDetail) {
+      body.debug = this.debugDetail;
+    }
+
+    return body;
+  }
+
+  /**
+   * Rincian teknis untuk log server dan (saat development) untuk `debug`.
+   *
+   * Disimpan terpisah dari `message` supaya `message` yang dibacakan
+   * screen reader tetap ringkas dan ramah dalam segala keadaan.
+   */
+  public get debugDetail(): string | undefined {
+    return this.detail;
   }
 }
 

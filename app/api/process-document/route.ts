@@ -32,7 +32,7 @@ import { cookies } from 'next/headers';
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { AppError, errorResponse, toAppError } from '@/lib/api-error';
-import { extractDocument, joinChunks } from '@/lib/gemini';
+import { extractDocumentWithFallback } from '@/lib/llm';
 import { checkRateLimit, identifyRequester, rateLimitHeaders } from '@/lib/rate-limit';
 import {
   createRouteHandlerSupabase,
@@ -41,6 +41,7 @@ import {
 } from '@/lib/supabase';
 import { validateFileOnServer } from '@/lib/validate-file';
 import type {
+  ExtractedChunk,
   ProcessDocumentRequest,
   ProcessDocumentResponse,
 } from '@/types';
@@ -199,14 +200,20 @@ export async function POST(request: NextRequest): Promise<Response> {
     // `maxChunks` dibatasi oleh env agar biaya terkendali.
     const maxChunks = parseMaxChunks(process.env.MAX_CHUNKS_PER_DOCUMENT);
 
-    const extraction = await extractDocument({
+    const extraction = await extractDocumentWithFallback({
       bytes,
       mimeType: validation.mimeType,
       kind: inferKind(validation.mimeType),
       maxChunks,
     });
 
-    const text = joinChunks(extraction.chunks);
+    /*
+     * Perangkaian bagian kini terjadi di dalam provider yang melayani
+     * (lihat `lib/llm.ts` / `lib/gemini.ts`) sehingga bentuk salah satu
+     * bagian selalu sama. `joinChunks` tetap tersedia untuk kebutuhan
+     * lain yang menerima daftar bagian mentah.
+     */
+    const text = joinExtractedChunks(extraction.chunks);
     const warnings = [...extraction.warnings];
 
     // Beri tahu pengguna bila tipe berkas yang diklaim klien tidak cocok
@@ -312,6 +319,22 @@ function isSafeStoragePath(path: string): boolean {
   if (/^[a-z]+:\/\//i.test(path)) return false;
   if (/[\u0000-\u001f\\]/.test(path)) return false;
   return true;
+}
+
+/**
+ * Rangkai bagian-bagian hasil ekstraksi menjadi satu teks akhir dengan
+ * jeda yang enak didengar.
+ *
+ * Perilakunya sengaja identik dengan `joinChunks` di `lib/gemini.ts`
+ * (bagian kosong dibuang, dipisah dua baris baru). Fungsi ini ada di sini
+ * agar rute tidak bergantung pada modul provider tertentu — baik 9router
+ * maupun Gemini mengembalikan bentuk bagian yang sama.
+ */
+function joinExtractedChunks(chunks: readonly ExtractedChunk[]): string {
+  return chunks
+    .map((chunk) => chunk.text.trim())
+    .filter((text) => text.length > 0)
+    .join('\n\n');
 }
 
 function inferKind(mimeType: string): 'naratif' | 'bergambar' {

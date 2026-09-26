@@ -9,7 +9,7 @@
  */
 
 import { AppError } from '@/lib/api-error';
-import { generateTextWithFallback } from '@/lib/gemini';
+import { generateTextWithFallback } from '@/lib/llm';
 
 /* ============================================================
  * Batasan

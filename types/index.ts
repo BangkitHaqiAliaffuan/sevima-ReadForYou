@@ -105,6 +105,18 @@ export interface ApiErrorBody {
     /** True bila mencoba ulang berpotensi berhasil. */
     retryable: boolean;
   };
+  /**
+   * Rincian teknis penyebab kegagalan. HANYA diisi saat bukan produksi
+   * (`NODE_ENV !== 'production'`) — lihat `AppError.toBody`.
+   *
+   * Ada karena pesan `error.message` sengaja generik dan ramah untuk
+   * dibacakan screen reader, sehingga tanpa field ini penelusuran masalah
+   * menjadi buta: "AI bermasalah" dapat berarti kunci salah, kuota habis,
+   * atau jaringan mati, dan ketiganya butuh tindakan yang sangat berbeda.
+   *
+   * JANGAN pernah menampilkan ini sebagai pesan utama kepada pengguna.
+   */
+  debug?: string;
 }
 
 /* ============================================================

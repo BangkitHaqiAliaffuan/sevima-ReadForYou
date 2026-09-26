@@ -92,6 +92,29 @@ export interface UseServerAudioResult {
 /** Jeda sebelum beralih ke suara bawaan peramban. */
 const FAILURES_BEFORE_FALLBACK = 3;
 
+/**
+ * Dilempar ketika server menjawab 429. Berbeda dari galat lain: kegagalan
+ * ini TIDAK boleh di-retry seketika (hanya membakar kuota), melainkan
+ * menunggu sesuai header Retry-After.
+ *
+ * Ditaruh di tingkat modul (bukan dalam komponen) supaya pemeriksaan
+ * `instanceof` tetap sah walau closure fetch dibuat pada render berbeda.
+ */
+class TtsRateLimitedError extends Error {
+  readonly retryAfterMs: number;
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.name = 'TtsRateLimitedError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** Tunggu sesuai Retry-After, dibatasi agar pemutaran tidak macet lama. */
+function sleepCapped(ms: number): Promise<void> {
+  const capped = Math.min(Math.max(0, ms), 10_000);
+  return new Promise((resolve) => setTimeout(resolve, capped));
+}
+
 export function useServerAudio(
   options: UseServerAudioOptions = {},
 ): UseServerAudioResult {
@@ -127,6 +150,11 @@ export function useServerAudio(
   /** Cache audio per indeks kalimat: objectURL + status siap. */
   const audioCacheRef = useRef<Map<number, string>>(new Map());
   const pendingFetchesRef = useRef<Map<number, AbortController>>(new Map());
+  /**
+   * Janji fetch yang sedang berjalan per indeks. Dipakai agar dua pemanggil
+   * (antrean + preload) menunggu hasil yang SAMA, bukan saling mengalahkan.
+   */
+  const pendingAudioRef = useRef<Map<number, Promise<string | null>>>(new Map());
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   /** Ucapan speechSynthesis untuk mode cadangan. */
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -287,6 +315,21 @@ export function useServerAudio(
       });
 
       if (!response.ok) {
+        // 429 adalah sinyal "mundur sejenak", bukan "coba lagi sekarang".
+        if (response.status === 429) {
+          const retryAfterSec = Number.parseInt(
+            response.headers.get('Retry-After') ?? '',
+            10,
+          );
+          const retryAfterMs = Number.isFinite(retryAfterSec)
+            ? retryAfterSec * 1000
+            : 5000;
+          throw new TtsRateLimitedError(
+            'Batas laju suara tercapai. Menunggu sebentar sebelum mencoba lagi.',
+            retryAfterMs,
+          );
+        }
+
         /*
          * PENTING: server mengembalikan JSON, bukan audio, ketika gagal.
          * Kita memeriksa content-type sebelum membaca body supaya tidak
@@ -328,34 +371,53 @@ export function useServerAudio(
    * beruntun menandakan layanan benar-benar mati — dan dalam kasus itu
    * kita lebih baik segera beralih ke suara bawaan daripada membuat
    * pengguna menunggu.
+   *
+   * Dua aturan tambahan:
+   *  - Bila fetch untuk indeks ini SUDAH berjalan (mis. dari preload),
+   *    tunggu hasilnya alih-alih mengembalikan null. Mengembalikan null
+   *    membuat kalimat dilewati padahal audionya sedetik lagi siap.
+   *  - Kegagalan 429 tidak di-retry seketika; tunggu sesuai Retry-After
+   *    (dibatasi 10 detik) agar tidak membakar kuota.
    */
   const ensureAudio = useCallback(
     async (index: number): Promise<string | null> => {
       const cached = audioCacheRef.current.get(index);
       if (cached) return cached;
 
-      const existing = pendingFetchesRef.current.get(index);
-      if (existing) {
-        // Sudah ada permintaan berjalan; tunggu dengan cara sederhana.
-        return null;
+      const inFlight = pendingAudioRef.current.get(index);
+      if (inFlight) {
+        try {
+          return await inFlight;
+        } catch {
+          return null;
+        }
       }
 
       const controller = new AbortController();
       pendingFetchesRef.current.set(index, controller);
 
-      try {
-        const url = await fetchSentenceAudio(index, controller.signal);
-        consecutiveFailuresRef.current = 0;
-        return url;
-      } catch {
-        if (controller.signal.aborted) return null;
-
-        // Coba sekali lagi untuk kegagalan transien.
+      const task = (async (): Promise<string | null> => {
         try {
-          const url = await fetchSentenceAudio(index, controller.signal);
-          consecutiveFailuresRef.current = 0;
-          return url;
+          try {
+            const url = await fetchSentenceAudio(index, controller.signal);
+            consecutiveFailuresRef.current = 0;
+            return url;
+          } catch (firstError) {
+            if (controller.signal.aborted) return null;
+
+            if (firstError instanceof TtsRateLimitedError) {
+              await sleepCapped(firstError.retryAfterMs);
+              if (controller.signal.aborted) return null;
+            }
+
+            // Coba sekali lagi untuk kegagalan transien.
+            const url = await fetchSentenceAudio(index, controller.signal);
+            consecutiveFailuresRef.current = 0;
+            return url;
+          }
         } catch (retryError) {
+          if (controller.signal.aborted) return null;
+
           consecutiveFailuresRef.current += 1;
 
           /*
@@ -375,9 +437,16 @@ export function useServerAudio(
             );
           }
           return null;
+        } finally {
+          pendingFetchesRef.current.delete(index);
         }
+      })();
+
+      pendingAudioRef.current.set(index, task);
+      try {
+        return await task;
       } finally {
-        pendingFetchesRef.current.delete(index);
+        pendingAudioRef.current.delete(index);
       }
     },
     [activateFallback, fetchSentenceAudio, onError],
@@ -435,18 +504,26 @@ export function useServerAudio(
   }, []);
 
   /**
-   * Putar satu kalimat. Tidak pernah memanggil dirinya sendiri.
-   * Mengembalikan 'played' bila audio mulai berbunyi, atau 'failed' bila
-   * kalimat ini tidak dapat diputar sehingga pemanggil perlu melanjutkan.
+   * Putar satu kalimat. Tidak pernah memanggil dirinya sendiri dan tidak
+   * pernah menaikkan generasi — generasi dimiliki oleh `runQueue` (satu
+   * generasi per invokasi antrean). Tugas fungsi ini hanya MEMVERIFIKASI
+   * bahwa generasinya masih berlaku di setiap titik await.
+   *
+   * Mengembalikan 'played' bila audio mulai berbunyi, 'failed' bila
+   * kalimat ini tidak dapat diputar sehingga pemanggil perlu melanjutkan,
+   * atau 'superseded' bila antrean ini sudah digantikan antrean baru.
    */
   const playSingle = useCallback(
-    async (index: number): Promise<'played' | 'failed' | 'superseded'> => {
+    async (
+      index: number,
+      generation: number,
+    ): Promise<'played' | 'failed' | 'superseded'> => {
       const list = chunksRef.current;
       const chunk = list[index];
       if (!chunk) return 'failed';
 
-      const generation = generationRef.current + 1;
-      generationRef.current = generation;
+      // Antrean ini sudah digantikan sebelum mulai (Stop/muat baru/lompat).
+      if (generationRef.current !== generation) return 'superseded';
 
       indexRef.current = index;
       setCurrentIndex(index);
@@ -518,24 +595,32 @@ export function useServerAudio(
    * Menggunakan `while` alih-alih rekursi: lebih jelas dibaca, tidak
    * menumpuk stack pada dokumen dengan ratusan kalimat, dan tidak
    * memicu keluhan "access before declaration" dari eslint.
+   *
+   * KEPEMILIKAN GENERASI: satu invokasi antrean = satu generasi, dinaikkan
+   * di sini, di awal. `playSingle` hanya memverifikasi — ia tidak boleh
+   * menaikkan sendiri, karena itu membuat pemeriksaan di bawah selalu
+   * gagal dan antrean mati setelah satu kalimat (bug yang pernah terjadi).
    */
   const runQueue = useCallback(
     async (startIndex: number) => {
+      const generation = generationRef.current + 1;
+      generationRef.current = generation;
+
       let index = startIndex;
 
       while (index < chunksRef.current.length) {
-        const currentGeneration = generationRef.current;
-
         if (usingFallbackRef.current) {
           speakWithBrowserVoice(index);
           return;
         }
 
-        const outcome = await playSingle(index);
+        const outcome = await playSingle(index, generation);
 
         if (outcome === 'superseded') return;
 
-        if (generationRef.current !== currentGeneration) return;
+        // Berhenti bila antrean lain (Stop/muat baru/lompat/putar ulang)
+        // telah mengambil alih di tengah jalan.
+        if (generationRef.current !== generation) return;
 
         if (outcome === 'failed') {
           // Beralih ke mode cadangan bila kegagalan sudah menumpuk.
@@ -625,6 +710,10 @@ export function useServerAudio(
   const play = useCallback(() => {
     if (chunksRef.current.length === 0) return;
     const current = stateRef.current;
+    // Abaikan penekanan ganda: antrean sudah berjalan. Tanpa pengaman ini,
+    // klik kedua melahirkan antrean tandingan yang saling membatalkan
+    // dengan antrean pertama hingga tidak ada bunyi sama sekali.
+    if (current === 'speaking' || current === 'loading') return;
     const startAt = current === 'paused' || current === 'ended' ? indexRef.current : 0;
     void runQueue(current === 'ended' ? 0 : startAt);
   }, [runQueue]);
@@ -638,6 +727,10 @@ export function useServerAudio(
         window.speechSynthesis.cancel();
       }
     } else {
+      // Batalkan antrean yang mungkin sedang menunggu fetch: tanpa ini,
+      // audio tetap mulai berbunyi setelah jeda bila tepat jeda ditekan
+      // saat status masih 'loading'.
+      generationRef.current += 1;
       audioElementRef.current?.pause();
     }
 

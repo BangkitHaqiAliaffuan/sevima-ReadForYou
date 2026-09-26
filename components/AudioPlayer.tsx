@@ -24,7 +24,7 @@
  *    padahal sistem hanya sedang menyiapkan bagian berikutnya.
  */
 
-import { useId } from 'react';
+import { useId, useState } from 'react';
 
 import { formatDuration } from '@/lib/chunk-text';
 import type { SpeechState, VoiceOption } from '@/types';
@@ -82,6 +82,21 @@ export function AudioPlayer(props: AudioPlayerProps) {
 
   const headingId = useId();
   const positionId = useId();
+
+  /*
+   * Pratinjau posisi slider saat diseret. Nilai hanya di-commit ke pemutar
+   * saat seretan dilepas (pointer up / key up), bukan pada setiap tick —
+   * setiap commit memicu antrean + fetch TTS baru, dan drag 3 detik tanpa
+   * komit-on-release dapat membakar puluhan request dari kuota 120/menit.
+   */
+  const [seekPreview, setSeekPreview] = useState<number | null>(null);
+  const displayPosition = seekPreview ?? currentIndex + 1;
+  const commitSeek = () => {
+    if (seekPreview !== null) {
+      onGoToSentence(seekPreview - 1);
+      setSeekPreview(null);
+    }
+  };
 
   const isSpeaking = state === 'speaking';
   const isPaused = state === 'paused';
@@ -265,11 +280,14 @@ export function AudioPlayer(props: AudioPlayerProps) {
               type="range"
               min={1}
               max={Math.max(1, totalSentences)}
-              value={currentIndex + 1}
+              value={displayPosition}
               onChange={(event) =>
-                onGoToSentence(Number.parseInt(event.target.value, 10) - 1)
+                setSeekPreview(Number.parseInt(event.target.value, 10))
               }
-              aria-valuetext={`Kalimat ${currentIndex + 1} dari ${totalSentences}`}
+              onPointerUp={commitSeek}
+              onKeyUp={commitSeek}
+              onBlur={commitSeek}
+              aria-valuetext={`Kalimat ${displayPosition} dari ${totalSentences}`}
               className="mt-2 h-11 w-full max-w-md cursor-pointer accent-accent"
             />
           </div>
@@ -301,8 +319,10 @@ interface PlayerButtonProps {
  * bahwa tombol itu ada maupun mengapa tidak berfungsi.
  *
  * Dengan `aria-disabled`, tombol tetap dapat difokus dan tetap dibacakan
- * ("tombol tidak tersedia"), sementara handler tetap menolak aksi. Ini
- * memberi kesempatan kepada pengguna untuk memahami keadaan.
+ * ("tombol tidak tersedia"), sementara klik DITOLAK di dalam (lihat
+ * `guardedClick`) — bukan dibiarkan lolos ke handler. Tanpa penolakan
+ * ini, menekan Putar saat audio sedang diputar akan melahirkan antrean
+ * tandingan yang saling membatalkan hingga tidak ada bunyi sama sekali.
  */
 function PlayerButton({
   onClick,
@@ -328,7 +348,9 @@ function PlayerButton({
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => {
+        if (!ariaDisabled) onClick();
+      }}
       aria-disabled={ariaDisabled}
       aria-label={label}
       className={`${base} ${ariaDisabled ? disabledLook : palette}`}

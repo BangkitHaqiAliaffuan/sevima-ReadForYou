@@ -32,7 +32,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Setup: `cp .env.local.example .env.local`, fill Supabase URL/anon key + `SUPABASE_SERVICE_ROLE_KEY` + `GEMINI_API_KEY`; `.env*` is gitignored, never commit.
 - `SUPABASE_SERVICE_ROLE_KEY` and `GEMINI_API_KEY` are SERVER ONLY — never add `NEXT_PUBLIC_` prefix. `lib/supabase.ts:assertServerOnly` throws if service client is called from browser.
 - Model chain is env-driven: `GEMINI_MODEL` + `GEMINI_FALLBACK_MODELS` (+ `MAX_CHUNKS_PER_DOCUMENT`). No TTS key exists — `msedge-tts` uses Edge Read Aloud WebSocket directly.
-- Bucket `modules` is private, 20 MB cap, PDF/JPEG/PNG/WEBP only — must match `MAX_FILE_BYTES` in `lib/validate-file.ts`.
+- Bucket `modules` is private, 20 MB cap, PDF/JPEG/PNG/WEBP only — must match `MAX_FILE_BYTES` in `lib/validate-file.ts`. Bucket name overridable via `SUPABASE_BUCKET` / `NEXT_PUBLIC_SUPABASE_BUCKET` (`lib/supabase.ts:STORAGE_BUCKET`).
 
 # CRITICAL: process.env must use literal keys in browser-reachable code
 - Turbopack/webpack only inlines `process.env` into the browser bundle when the key is literal (`process.env.NEXT_PUBLIC_X`). Computed access (`process.env[name]`) is NEVER inlined → always `undefined` in the browser (Node/server unaffected).
@@ -44,6 +44,11 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Neither `tsc` nor `eslint` catches this** — only `npm run build` does. Always build before declaring work done.
 - Client-safe: `lib/tts/estimate.ts`. Pure helpers (`chunk-text.ts`, `validate-file.ts`, `api-error.ts`) must never import `synthesize.ts`.
 
+# API routes & TTS constraints
+- All `app/api/*/route.ts` must stay `runtime = 'nodejs'` + `dynamic = 'force-dynamic'` (msedge-tts needs WebSocket/Buffer; edge runtime breaks). Keep `maxDuration` 120 (process-document) / 30 (tts) — do not lower.
+- TTS is per-sentence: one `POST /api/tts` per sentence, each ≤ `MAX_TTS_CHARS` (1000, see `lib/tts/synthesize.ts`). Voice must start with `id-ID-` (default `id-ID-ArdiNeural`); other locales are rejected as `INVALID_VOICE`.
+- `hooks/useServerAudio.ts` falls back to `speechSynthesis` after 3 consecutive TTS failures (`FAILURES_BEFORE_FALLBACK`) — keep that fallback path working.
+
 # Gemini model gotchas
 - `@google/genai` v2: `responseSchema` is DEPRECATED → use `responseJsonSchema` with standard JSON Schema (lowercase `type: 'object'`). See `lib/gemini.ts`.
 - `gemini-1.5-flash` is SHUT DOWN; `gemini-2.0-flash` shut down 2026-06-01. Default `gemini-3.8-flash` + fallbacks, auto-switch on 404/not-supported. Ref: https://ai.google.dev/gemini-api/docs/deprecations
@@ -52,7 +57,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 # Validation, rate limits, errors
 - Files: client check (`validateFileOnClient`) is UX-only; server re-validates via magic bytes (`validateFileOnServer`) — never trust `File.type`. Keep both in sync.
 - Rate limiter is in-memory (`lib/rate-limit.ts`): extraction 20/min, TTS 120/min — use distinct `keyPrefix` per route (TTS is per-sentence, sharing a bucket starves extraction). Multi-instance deploys multiply the limit; swap file for Redis in production.
-- API errors go through `AppError` codes in `lib/api-error.ts` — reuse codes, don't invent ad-hoc shapes.
+- API errors go through `AppError` codes in `lib/api-error.ts` — reuse codes, don't invent ad-hoc shapes. `detail` arg is server-log only, never sent to client.
 
 # Accessibility contract (project's core requirement — do not regress)
 - `aria-disabled`, NOT `disabled`, on playback buttons (keeps tab order/focus).

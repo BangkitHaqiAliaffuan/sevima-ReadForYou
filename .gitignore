@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local test docs (esai/contoh berkas untuk uji unggah manual, jangan commit)
+/docs/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

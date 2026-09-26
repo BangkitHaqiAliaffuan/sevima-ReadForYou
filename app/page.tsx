@@ -111,11 +111,18 @@ export default function HomePage() {
     );
   }, [announce]);
 
+  const handleAudioReady = useCallback(() => {
+    announce('Audio siap. Tekan Putar untuk mulai mendengarkan.', {
+      key: 'audio-ready',
+    });
+  }, [announce]);
+
   const audio = useServerAudio({
     onStateChange: handleStateChange,
     onComplete: handleComplete,
     onError: handleAudioError,
     onFallbackActivated: handleFallbackActivated,
+    onAudioReady: handleAudioReady,
   });
 
   const { load: loadAudio } = audio;
@@ -318,11 +325,11 @@ export default function HomePage() {
                 ? (payload.text.length / 14) * 1000 * 1.25
                 : 0,
             )}. ` +
-            `Pemutar suara siap digunakan.` +
+            `Menyiapkan audio. Tombol Putar akan aktif setelah audio siap.` +
             (payload.warnings.length > 0
               ? ` Terdapat ${payload.warnings.length} catatan penting.`
               : ''),
-          { key: 'status' },
+          { key: 'audio-ready' },
         );
       } catch (err) {
         const message = toFriendlyMessage(err);
@@ -424,6 +431,9 @@ export default function HomePage() {
       <AudioPlayer
         state={audio.state}
         isReady={audio.isReady}
+        isAudioReady={audio.isAudioReady}
+        prefetchReady={audio.prefetchReady}
+        prefetchNeeded={audio.prefetchNeeded}
         usingFallback={audio.usingFallback}
         currentIndex={audio.currentIndex}
         totalSentences={audio.totalSentences}

@@ -61,6 +61,8 @@ export interface UseServerAudioOptions {
   onError?: (message: string) => void;
   /** Dipanggil sekali bila beralih ke suara bawaan peramban. */
   onFallbackActivated?: () => void;
+  /** Dipanggil sekali setiap audio awal selesai disiapkan (siap diputar). */
+  onAudioReady?: () => void;
 }
 
 export interface UseServerAudioResult {
@@ -75,6 +77,11 @@ export interface UseServerAudioResult {
   progressPercent: number;
   /** Persentase bagian yang audionya sudah siap diputar. */
   bufferedPercent: number;
+  /** True bila audio awal cukup untuk mulai memutar tanpa jeda. */
+  isAudioReady: boolean;
+  /** Kemajuan penyiapan audio awal (siap dari butuh). */
+  prefetchReady: number;
+  prefetchNeeded: number;
   voice: string;
   rate: number;
   setVoice: (voice: string) => void;
@@ -91,6 +98,13 @@ export interface UseServerAudioResult {
 
 /** Jeda sebelum beralih ke suara bawaan peramban. */
 const FAILURES_BEFORE_FALLBACK = 3;
+
+/**
+ * Berapa kalimat awal yang harus siap sebelum tombol Putar dibuka.
+ * Angka 3 pas dengan PRELOAD_AHEAD=2: kalimat 0 langsung diputar,
+ * dua berikutnya sudah dicover preload — pemutaran kontinu tanpa jeda.
+ */
+const PREFETCH_BEFORE_READY = 3;
 
 /**
  * Dilempar ketika server menjawab 429. Berbeda dari galat lain: kegagalan
@@ -124,6 +138,7 @@ export function useServerAudio(
     onComplete,
     onError,
     onFallbackActivated,
+    onAudioReady,
   } = options;
 
   const [state, setState] = useState<SpeechState>('idle');
@@ -159,6 +174,9 @@ export function useServerAudio(
   /** Ucapan speechSynthesis untuk mode cadangan. */
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Melacak apakah kesiapan audio sudah diumumkan untuk teks saat ini. */
+  const audioReadyFiredRef = useRef(false);
+  const onAudioReadyRef = useRef<UseServerAudioOptions['onAudioReady']>(undefined);
 
   const updateState = useCallback(
     (next: SpeechState) => {
@@ -378,9 +396,13 @@ export function useServerAudio(
    *    membuat kalimat dilewati padahal audionya sedetik lagi siap.
    *  - Kegagalan 429 tidak di-retry seketika; tunggu sesuai Retry-After
    *    (dibatasi 10 detik) agar tidak membakar kuota.
+   *
+   * Parameter `quiet` dipakai prefetch latar: kegagalan tetap dihitung
+   * menuju fallback, tapi tidak diumumkan per kalimat — pengumuman
+   * kesiapan ditangani terpusat lewat onAudioReady.
    */
   const ensureAudio = useCallback(
-    async (index: number): Promise<string | null> => {
+    async (index: number, quiet = false): Promise<string | null> => {
       const cached = audioCacheRef.current.get(index);
       if (cached) return cached;
 
@@ -430,7 +452,7 @@ export function useServerAudio(
             activateFallback(
               retryError instanceof Error ? retryError.message : String(retryError),
             );
-          } else {
+          } else if (!quiet) {
             onError?.(
               'Satu bagian teks gagal diubah menjadi suara. ' +
                 'Sistem akan mencoba bagian berikutnya.',
@@ -470,6 +492,26 @@ export function useServerAudio(
     },
     [ensureAudio],
   );
+
+  /**
+   * Unduh audio awal di latar segera setelah teks dimuat, agar tombol Putar
+   * yang diblokir bisa dibuka begitu kalimat pertama siap. Senyap (quiet):
+   * kegagalan tetap dihitung menuju fallback, tapi tidak diumumkan per
+   * kalimat.
+   *
+   * Aman di-fire-and-forget: bila teks/suara diganti di tengah jalan,
+   * releaseAllAudio membatalkan controller sehingga fetch basi tidak
+   * menulis ke cache baru.
+   */
+  const prefetchInitial = useCallback(() => {
+    if (usingFallbackRef.current) return;
+    const total = chunksRef.current.length;
+    if (total === 0) return;
+    const count = Math.min(PREFETCH_BEFORE_READY, total);
+    for (let i = 0; i < count; i += 1) {
+      void ensureAudio(i, true);
+    }
+  }, [ensureAudio]);
 
   /* ============================================================
    * Pemutaran
@@ -702,9 +744,12 @@ export function useServerAudio(
           0,
         ),
       );
+      // Mulai siapkan audio awal di latar; tombol Putar dibuka lewat
+      // isAudioReady begitu kalimat pertama siap.
+      prefetchInitial();
       updateState('idle');
     },
-    [clearProgressTimer, releaseAllAudio, updateState],
+    [clearProgressTimer, prefetchInitial, releaseAllAudio, updateState],
   );
 
   const play = useCallback(() => {
@@ -799,10 +844,11 @@ export function useServerAudio(
       voiceRef.current = next;
       setVoiceState(next);
       // Audio lama memakai suara berbeda; buang agar tidak diputar ulang
-      // dengan suara yang salah.
+      // dengan suara yang salah, lalu siapkan ulang dengan suara baru.
       releaseAllAudio();
+      prefetchInitial();
     },
-    [releaseAllAudio],
+    [prefetchInitial, releaseAllAudio],
   );
 
   const setRate = useCallback((next: number) => {
@@ -830,6 +876,37 @@ export function useServerAudio(
     return Math.min(100, Math.round((readyCount / chunks.length) * 100));
   }, [readyCount, chunks.length]);
 
+  /** Berapa audio awal yang harus siap (dibatasi jumlah kalimat). */
+  const prefetchNeeded = useMemo(
+    () => Math.min(PREFETCH_BEFORE_READY, chunks.length),
+    [chunks],
+  );
+
+  /**
+   * Kesiapan dihitung TURUNAN dari cache, bukan state — sehingga ganti
+   * suara (yang menghanguskan cache) otomatis memblokir ulang Putar tanpa
+   * logika reset tambahan. Mode fallback tidak butuh buffer sama sekali.
+   */
+  const isAudioReady =
+    chunks.length > 0 &&
+    (usingFallback || readyCount >= prefetchNeeded);
+
+  // Sinkronkan callback tanpa mengikat identitasnya ke effect di bawah.
+  useEffect(() => {
+    onAudioReadyRef.current = onAudioReady;
+  });
+
+  // Umumkan transisi belum-siap -> siap tepat sekali per teks/suara.
+  useEffect(() => {
+    if (!isAudioReady) {
+      audioReadyFiredRef.current = false;
+      return;
+    }
+    if (audioReadyFiredRef.current) return;
+    audioReadyFiredRef.current = true;
+    onAudioReadyRef.current?.();
+  }, [isAudioReady]);
+
   return {
     state,
     isReady: chunks.length > 0,
@@ -841,6 +918,9 @@ export function useServerAudio(
     totalMs,
     progressPercent,
     bufferedPercent,
+    isAudioReady,
+    prefetchReady: Math.min(readyCount, prefetchNeeded),
+    prefetchNeeded,
     voice,
     rate,
     setVoice,

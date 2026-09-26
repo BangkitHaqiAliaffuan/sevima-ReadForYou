@@ -38,6 +38,10 @@ export interface AudioPlayerProps {
   currentSentence: string;
   progressPercent: number;
   bufferedPercent: number;
+  /** False saat audio awal masih disiapkan — tombol Putar diblokir. */
+  isAudioReady: boolean;
+  prefetchReady: number;
+  prefetchNeeded: number;
   totalMs: number;
   voices: VoiceOption[];
   voicesUnavailable: boolean;
@@ -64,6 +68,9 @@ export function AudioPlayer(props: AudioPlayerProps) {
     currentSentence,
     progressPercent,
     bufferedPercent,
+    isAudioReady,
+    prefetchReady,
+    prefetchNeeded,
     totalMs,
     voices,
     voicesUnavailable,
@@ -101,6 +108,8 @@ export function AudioPlayer(props: AudioPlayerProps) {
   const isSpeaking = state === 'speaking';
   const isPaused = state === 'paused';
   const isLoading = state === 'loading';
+  /** Teks ada tapi audio awal belum cukup — Putar diblokir sementara. */
+  const preparingAudio = isReady && !isAudioReady;
 
   const notReady = !isReady;
 
@@ -146,8 +155,12 @@ export function AudioPlayer(props: AudioPlayerProps) {
       >
         <PlayerButton
           onClick={onPlay}
-          ariaDisabled={notReady || isSpeaking || isLoading}
-          label="Putar pembacaan dari awal"
+          ariaDisabled={notReady || !isAudioReady || isSpeaking || isLoading}
+          label={
+            preparingAudio
+              ? `Menyiapkan audio, ${prefetchReady} dari ${prefetchNeeded} kalimat siap`
+              : 'Putar pembacaan dari awal'
+          }
         >
           <PlayIcon />
           <span className="sr-only">Putar</span>
@@ -194,6 +207,14 @@ export function AudioPlayer(props: AudioPlayerProps) {
           <span className="sr-only">Hentikan</span>
         </PlayerButton>
       </div>
+
+      {/* ---------- Status penyiapan audio ---------- */}
+      {preparingAudio && (
+        <p className="max-w-reading rounded-md border-2 border-border bg-surface px-4 py-3 text-base font-medium text-muted">
+          Menyiapkan audio: {prefetchReady} dari {prefetchNeeded} kalimat
+          siap. Tombol Putar akan aktif setelah audio siap.
+        </p>
+      )}
 
       {/* ---------- Indikator ---------- */}
       {isReady && (

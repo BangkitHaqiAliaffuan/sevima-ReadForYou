@@ -19,7 +19,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - `app/api/process-document/route.ts` = Gemini extraction; `tts/route.ts` = per-sentence synthesis; `voices/route.ts` = cached Indonesian voice list
 - `hooks/useSession.ts` is the sole auth-state source; `hooks/useServerAudio.ts` owns the sentence queue + preload + `speechSynthesis` fallback; `middleware.ts` only refreshes Supabase cookies, never blocks guests
 - `@/*` → repo root (`./*`), not `./src/*`. Tailwind v4: `@import "tailwindcss"` in `app/globals.css`, no `tailwind.config.ts`
-- Next 16: keep `LayoutProps<"/">` on root layout. Supabase DDL + RLS + bucket: run whole `supabase/schema.sql`, then `supabase/migration_auth_anon.sql`, in SQL Editor on new projects
+- Next 16: keep `LayoutProps<"/">` on root layout. Supabase DDL + RLS + bucket: run whole `supabase/schema.sql`, then `supabase/migration_simple_auth.sql`, in SQL Editor on new projects
 
 # Stale prose (trust code over these)
 - `README.md` §"Keputusan..." point 1 ("berjalan tanpa autentikasi") is pre-auth — auth exists now, see Auth model below.
@@ -86,11 +86,13 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - All icons `aria-hidden="true"` + `focusable="false"` with visually hidden text; touch targets ≥ 44px (`min-h-11`).
 - `app/layout.tsx`: keep `lang="id"`, skip link as first focusable element, `maximumScale: 5` (never 1 — kills zoom, WCAG 1.4.4).
 
-# Auth model (anon + email, guest allowed)
-- Entry: `components/AuthPanel.tsx` (1-tap `signInAnonymously`, upgrade via `updateUser({email,password})` — NOT `linkIdentity`, which in installed auth-js only supports OAuth/IdToken), session via `hooks/useSession.ts`, cookie refresh in `middleware.ts`.
-- Upload scope is `user.id ?? 'anonim'` and insert sets `user_id` (`app/page.tsx`); storage prefix enforced server-side too. Run `supabase/schema.sql` then `supabase/migration_auth_anon.sql` on the project (narrows `mvp_anon_select` to `user_id IS NULL`, locks anon uploads to `anonim/`).
-- `app/api/process-document/route.ts` verifies ownership (`row.user_id === session uid`, legacy NULL rows allowed session-less) and keys rate limit per `user:<id>` (guests per IP). `/api/tts` stays IP-limited on purpose (per-sentence `getUser` would be wasteful; no user data involved).
-- Dashboard prerequisite: enable Anonymous Sign-Ins + Email providers, or guest sign-in fails with a friendly message.
+# Auth model (email only — TIDAK ada tamu/anon)
+- Dua keadaan saja: **belum masuk** (`user === null`) atau **sudah masuk** (akun email). Tidak ada `signInAnonymously` / `is_anonymous` / label "Tamu" — konsep itu dihapus.
+- Entry: `components/AuthPanel.tsx` (form Masuk/Daftar email; `signInWithPassword` + `signUp`), session via `hooks/useSession.ts` (`{ user, loading }`, tanpa `isAnonymous`), cookie refresh in `middleware.ts`.
+- Produk: pengguna belum masuk TETAP boleh mengunggah & mendengar; riwayat bacaan hanya untuk yang sudah masuk. Upload scope `user.id ?? 'anonim'` (`app/page.tsx`); insert sets `user_id` (NULL bila belum masuk).
+- DDL: run `supabase/schema.sql`, lalu `supabase/migration_simple_auth.sql` (menggantikan `migration_auth_anon.sql` — JANGAN jalankan keduanya). Migrasi ini menetapkan `mvp_anon_select` → `user_id IS NULL` dan mengunci unggahan anon ke folder `anonim/`.
+- `app/api/process-document/route.ts` verifies ownership (`row.user_id === session uid`, legacy NULL rows allowed session-less) and keys rate limit per `user:<id>` (belum masuk per IP). `/api/tts` stays IP-limited on purpose.
+- Dashboard prerequisite: aktifkan provider **Email** saja. "Anonymous Sign-Ins" tidak lagi diperlukan.
 
 # File claims (multi-session — WAJIB sebelum edit file apa pun)
 - `claims.md` di root adalah registry-nya. SEBELUM mengedit: baca `claims.md` dulu.

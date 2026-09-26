@@ -51,5 +51,20 @@
 | `types/index.ts` | done | 2026-09-26-llm-9router | 2026-09-26 | Tambah `debug?: string` opsional ke `ApiErrorBody` (backward-compatible) |
 | `app/api/llm/test/route.ts` | done | 2026-09-26-llm-9router | 2026-09-26 | Mode `?mode=extract` + `error.cause`; terdaftar ƒ di build |
 | `scripts/probe-9router-pdf.py` | done | 2026-09-26-llm-9router | 2026-09-26 | Probe terbukti: A 400 · B kosong · C mengarang · D PNG ok |
+| `hooks/useSession.ts` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: `{ user, loading }`, `isAnonymous` dihapus. tsc/lint/build hijau |
+| `components/AuthPanel.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: hanya form email Masuk/Daftar (toggle), tombol "Lanjut tanpa masuk". Jalur tamu dihapus. Terverifikasi live di /masuk |
+| `components/Navbar.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: label 'Tamu' dihapus; tampil email atau Masuk/daftar |
+| `app/masuk/MasukClient.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: `isAnonymous` dihapus; redirect saat user login |
+| `app/masuk/page.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: metadata diperbarui (tanpa 'tamu') |
+| `components/DocumentHistory.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: CTA "Masuk" (bukan "Masuk sebagai tamu"). Terverifikasi live |
+| `app/page.tsx` | done | 2026-09-26-simple-auth | 2026-09-26 | Selesai: komentar scope diperbarui (belum masuk vs sudah masuk) |
+| `supabase/migration_simple_auth.sql` | done | 2026-09-26-simple-auth | 2026-09-26 | Baru: RLS tanpa anon sign-in (anon→user_id NULL, folder anonim/) |
+| `supabase/migration_auth_anon.sql` | done | 2026-09-26-simple-auth | 2026-09-26 | Diberi header USANG → arahkan ke migration_simple_auth.sql |
+| `middleware.ts` | done | 2026-09-26-simple-auth | 2026-09-26 | Komentar: rujukan signInAnonymously dihapus |
+| `AGENTS.md` | done | 2026-09-26-simple-auth | 2026-09-26 | Bagian "Auth model" ditulis ulang: email only, tanpa tamu |
+| `docs/panduan-tunanetra.md` | done | 2026-09-26-a11y-docs | 2026-09-26 | 11 bagian, 3917 kata. Semua 22 klaim pintasan/struktur diverifikasi ke kode dgn skrip (0 gagal). 2 temuan asli dicatat: tak ada `<nav>` (landmark navigation hilang) & isi dokumen belum berheading. `docs/` tak boleh diklaim per AGENTS.md — baris ini utk jejak |
+| `docs/modul-uji-fotosintesis.txt` | done | 2026-09-26-a11y-docs | 2026-09-26 | 710 kata, 7 kode penanda (Alfa Satu→Golf Tujuh) + 5 soal jebakan anti-halusinasi |
+| `docs/modul-uji-fotosintesis.pdf` | done | 2026-09-26-a11y-docs | 2026-09-26 | 2 halaman A4 via soffice; **terbukti** dirender jadi 2 PNG & seluruh kode penanda Alfa Satu→Foxtrot Enam terbaca 9router (1.6-5.2 s/halaman) |
+| `docs/modul-uji-berhitung.txt` | done | 2026-09-26-a11y-docs | 2026-09-26 | 432 kata, 6 kode penanda; penuh simbol/rumus/tabel utk uji pengubahan simbol→kalimat |
 
 Status yang sah: `claimed` (sedang dikerjakan) atau `done` (selesai + terverifikasi).

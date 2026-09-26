@@ -4,9 +4,8 @@
  * Navbar — bilah navigasi utama + status masuk ringkas.
  *
  * Satu-satunya pintu auth di seluruh situs selain halaman `/masuk`:
- * tamu melihat tombol highlight "Masuk / daftar", pengguna yang masuk
- * melihat identitasnya + tombol "Keluar". Alur penuh (tamu 1-ketuk,
- * upgrade, masuk email) tetap tinggal di `/masuk` + `AuthPanel`.
+ * pengguna yang belum masuk melihat tombol highlight "Masuk / daftar",
+ * pengguna yang sudah masuk melihat emailnya + tombol "Keluar".
  *
  * Aksesibilitas: <nav> berlabel (bukan sekadar <div>), tautan/tombol
  * asli, target ≥44px, `aria-disabled` + penjaga di handler (bukan
@@ -23,7 +22,7 @@ import { useSession } from '@/hooks/useSession';
 import { getBrowserSupabase } from '@/lib/supabase';
 
 export function Navbar() {
-  const { user, isAnonymous, loading } = useSession();
+  const { user, loading } = useSession();
   const router = useRouter();
   const busyRef = useRef(false);
   const [busy, setBusy] = useState(false);
@@ -74,16 +73,10 @@ export function Navbar() {
           <>
             <p
               className="max-w-44 truncate text-base text-muted sm:max-w-64"
-              title={isAnonymous ? 'Tamu' : (user.email ?? 'Akun')}
+              title={user.email ?? 'Akun'}
             >
-              {isAnonymous ? (
-                'Tamu'
-              ) : (
-                <>
-                  <span className="sr-only">Masuk sebagai </span>
-                  {user.email}
-                </>
-              )}
+              <span className="sr-only">Masuk sebagai </span>
+              {user.email}
             </p>
             <button
               type="button"

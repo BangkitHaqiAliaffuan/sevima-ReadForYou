@@ -6,9 +6,8 @@
  * Merakit ulang potongan yang sudah ada (LiveStatus + useSession +
  * AuthPanel) tanpa menduplikasi logika auth. Dua keputusan penting:
  *
- * 1. Redirect HANYA untuk auth permanen. Tamu anonim sengaja tetap di
- *    halaman ini agar form upgrade terlihat — memantulkan mereka ke
- *    beranda (yang tanpa UI auth) akan menghilangkan jalur upgrade.
+ * 1. Redirect hanya bila pengguna SUDAH masuk dan ada tujuan `redirect`.
+ *    Pengguna yang belum masuk tetap di halaman ini untuk melihat form.
  * 2. Tidak ada heading/fokus-on-mount tambahan: judul dokumen dari
  *    metadata ("Masuk — AI ReadForYou") sudah diumumkan screen reader
  *    saat navigasi, dan AuthPanel punya h2 + fokus-saat-berhasil sendiri.
@@ -42,25 +41,25 @@ export function safeRedirect(raw: string | null): string | null {
 
 export function MasukClient({ redirectParam }: MasukClientProps) {
   const { politeMessage, assertiveMessage, announce } = useAnnouncer();
-  const { user, isAnonymous, loading } = useSession();
+  const { user, loading } = useSession();
   const router = useRouter();
   const redirectedRef = useRef(false);
 
   const redirect = safeRedirect(redirectParam);
 
-  /* Pantulkan ke tujuan setelah masuk PERMANEN (upgrade/masuk email).
-     Fokus-di-efek mengikuti kontrak repo; navigasi di sini (bukan di
-     handler AuthPanel) agar pengumuman sukses sempat dikirim dulu. */
+  /* Pantulkan ke tujuan setelah masuk. Fokus-di-efek mengikuti kontrak
+     repo; navigasi di sini (bukan di handler AuthPanel) agar pengumuman
+     sukses sempat dikirim dulu. */
   useEffect(() => {
     if (loading || redirectedRef.current) return;
-    if (!user || isAnonymous) return;
+    if (!user) return;
     if (!redirect) return;
     redirectedRef.current = true;
     announce('Berhasil masuk. Membawa Anda kembali ke halaman sebelumnya.', {
       key: 'auth',
     });
     router.replace(redirect);
-  }, [user, isAnonymous, loading, redirect, announce, router]);
+  }, [user, loading, redirect, announce, router]);
 
   return (
     <>
@@ -71,7 +70,6 @@ export function MasukClient({ redirectParam }: MasukClientProps) {
 
       <AuthPanel
         user={user}
-        isAnonymous={isAnonymous}
         loading={loading}
         announce={announce}
         onDismiss={() => router.replace('/')}

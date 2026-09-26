@@ -346,9 +346,10 @@ export default function HomePage() {
 
         const supabase = getBrowserSupabase();
         /*
-         * Berkas milik pengguna yang masuk disimpan di bawah folder uid-nya
-         * agar cocok dengan kebijakan storage `owner_*_files`. Tamu murni
-         * tanpa sesi memakai folder 'anonim' (kebijakan `mvp_anon_upload`).
+         * Berkas milik pengguna yang sudah masuk disimpan di bawah folder
+         * uid-nya agar cocok dengan kebijakan storage `owner_*`. Pengguna
+         * yang BELUM masuk memakai folder 'anonim' (kebijakan
+         * `mvp_anon_upload`) dan tidak memperoleh riwayat.
          */
         const path = buildStoragePath({
           scope: sessionUserId ?? 'anonim',

@@ -5,8 +5,9 @@ import { MasukClient } from './MasukClient';
 export const metadata: Metadata = {
   title: 'Masuk — AI ReadForYou',
   description:
-    'Masuk sebagai tamu dengan satu ketukan atau dengan akun email ' +
-    'untuk menyimpan riwayat bacaan modul pelajaran Anda.',
+    'Masuk dengan akun email untuk menyimpan riwayat bacaan modul ' +
+    'pelajaran Anda. Tanpa masuk pun Anda tetap dapat mengunggah dan ' +
+    'mendengarkan modul.',
 };
 
 interface MasukPageProps {

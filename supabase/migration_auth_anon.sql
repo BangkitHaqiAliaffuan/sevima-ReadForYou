@@ -1,4 +1,13 @@
 -- ============================================================
+-- ⚠️  USANG — DIGANTIKAN oleh supabase/migration_simple_auth.sql
+-- ============================================================
+-- Model auth sudah disederhanakan: TIDAK ada lagi tamu anonim, jadi
+-- berkas ini tidak perlu dijalankan lagi. Gunakan
+-- `supabase/migration_simple_auth.sql` sebagai gantinya.
+-- JANGAN jalankan keduanya — kebijakannya saling menimpa.
+-- Berkas ini disimpan hanya sebagai catatan sejarah migrasi.
+-- ============================================================
+--
 -- AI ReadForYou — Migrasi Auth (anon + akun)
 -- ============================================================
 -- Jalankan berkas ini di Supabase SQL Editor SETELAH supabase/schema.sql,

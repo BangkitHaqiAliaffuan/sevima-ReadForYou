@@ -10,12 +10,12 @@ import { NextResponse, type NextRequest } from 'next/server';
  * sebelum konvensi `proxy` terverifikasi di versi Next yang dipakai —
  * migrasi yang gagal membuat refresh sesi berhenti diam-diam.
  *
- * Tanpa ini, sesi yang dibuat di browser (mis. signInAnonymously) tidak
+ * Tanpa ini, sesi yang dibuat di browser (masuk akun email) tidak
  * terbaca oleh Route Handler, sehingga cek kepemilikan dokumen di
  * /api/process-document selalu melihat pengguna sebagai "tanpa sesi".
  *
- * Hanya me-refresh token; tidak memblokir rute apa pun (tamu murni tanpa
- * sesi tetap boleh mengunggah — itu keputusan produk, bukan tugas
+ * Hanya me-refresh token; tidak memblokir rute apa pun (pengguna yang
+ * belum masuk tetap boleh mengunggah — itu keputusan produk, bukan tugas
  * middleware).
  */
 export async function middleware(request: NextRequest): Promise<Response> {

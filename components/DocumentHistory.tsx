@@ -3,11 +3,11 @@
 /**
  * DocumentHistory — riwayat bacaan milik pengguna yang masuk.
  *
- * Hanya dirender bila ada sesi (tamu murni tanpa sesi tidak punya
- * riwayat — halaman menampilkan penjelasan jujur sebagai gantinya,
- * bukan galat). Baris diambil lewat RLS `owner_select`, jadi pengguna
- * hanya melihat miliknya sendiri. Teks lengkap dimuat on-demand per
- * dokumen agar daftar tetap ringan.
+ * Hanya dirender dengan daftar bila ada sesi. Pengguna yang belum masuk
+ * tidak punya riwayat — halaman menampilkan penjelasan jujur sebagai
+ * gantinya, bukan galat. Baris diambil lewat RLS `owner_select`, jadi
+ * pengguna hanya melihat miliknya sendiri. Teks lengkap dimuat on-demand
+ * per dokumen agar daftar tetap ringan.
  */
 
 import { useCallback, useEffect, useId, useState } from 'react';
@@ -24,7 +24,7 @@ export interface HistoryItem {
 }
 
 export interface DocumentHistoryProps {
-  /** Null bila tamu murni — komponen mengembalikan penjelasan. */
+  /** Null bila belum masuk — komponen mengembalikan penjelasan. */
   userId: string | null;
   /** Dipanggil saat pengguna memilih "Bacakan lagi". */
   onReplay: (item: { text: string; name: string; wordCount: number }) => void;
@@ -44,12 +44,12 @@ export function DocumentHistory({ userId, onReplay, announce }: DocumentHistoryP
           Riwayat bacaan
         </h2>
         <p className="max-w-reading text-base text-muted">
-          Anda melanjutkan tanpa masuk, sehingga riwayat bacaan tidak
-          tersimpan.{' '}
+          Anda belum masuk, sehingga riwayat bacaan tidak tersimpan.{' '}
           <Link href="/masuk" className="font-semibold text-accent underline">
-            Masuk sebagai tamu
+            Masuk
           </Link>{' '}
-          bila ingin bacaan tersimpan otomatis.
+          bila ingin bacaan tersimpan otomatis dan dapat dibuka di perangkat
+          lain.
         </p>
       </section>
     );

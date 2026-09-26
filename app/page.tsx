@@ -58,6 +58,11 @@ export default function HomePage() {
   const [documentName, setDocumentName] = useState('');
   const [wordCount, setWordCount] = useState(0);
   const [warnings, setWarnings] = useState<string[]>([]);
+  /** Posisi macet terakhir — menampilkan panel pemulihan. */
+  const [stalledInfo, setStalledInfo] = useState<{
+    index: number;
+    total: number;
+  } | null>(null);
 
   const [voices, setVoices] = useState<VoiceOption[]>([]);
   const [voicesUnavailable, setVoicesUnavailable] = useState(false);
@@ -111,11 +116,53 @@ export default function HomePage() {
     );
   }, [announce]);
 
-  const handleAudioReady = useCallback(() => {
-    announce('Audio siap. Tekan Putar untuk mulai mendengarkan.', {
-      key: 'audio-ready',
-    });
-  }, [announce]);
+  const handleAudioReady = useCallback(
+    (info: { usingFallback: boolean }) => {
+      announce(
+        info.usingFallback
+          ? 'Audio siap dengan suara bawaan peramban. Tekan Putar untuk mulai mendengarkan.'
+          : 'Audio siap. Tekan Putar untuk mulai mendengarkan.',
+        {
+          key: 'audio-ready',
+        },
+      );
+    },
+    [announce],
+  );
+
+  const handleInterrupted = useCallback(
+    (info: {
+      index: number;
+      total: number;
+      playedCount: number;
+      reason: 'stall' | 'failed';
+    }) => {
+      setStalledInfo({ index: info.index, total: info.total });
+      const position = `kalimat ${info.index + 1} dari ${info.total}`;
+      announce(
+        info.reason === 'stall'
+          ? `Pembacaan terhenti di ${position}. Posisi Anda tersimpan, tidak perlu mengulang dari awal. ` +
+              `Tekan Ulangi kalimat ini untuk mencoba lagi, Lewati untuk lanjut ke kalimat berikutnya, ` +
+              `atau Pakai suara peramban untuk melanjutkan.`
+          : `Pembacaan tidak dapat dimulai. Layanan suara tidak merespons sama sekali. ` +
+              `Tekan Ulangi untuk mencoba lagi, atau Pakai suara peramban untuk melanjutkan.`,
+        { priority: 'assertive', key: 'audio-interrupted' },
+      );
+      // SENGAJA tidak memindahkan fokus: pengguna tetap di posisinya dan
+      // dapat mencapai tombol pemulihan lewat Tab normal.
+    },
+    [announce],
+  );
+
+  const handleSentenceWaiting = useCallback(
+    (index: number, total: number) => {
+      announce(
+        `Menyiapkan audio kalimat ${index + 1} dari ${total}. Mohon tunggu sebentar.`,
+        { key: 'audio-waiting' },
+      );
+    },
+    [announce],
+  );
 
   const audio = useServerAudio({
     onStateChange: handleStateChange,
@@ -123,9 +170,26 @@ export default function HomePage() {
     onError: handleAudioError,
     onFallbackActivated: handleFallbackActivated,
     onAudioReady: handleAudioReady,
+    onInterrupted: handleInterrupted,
+    onSentenceWaiting: handleSentenceWaiting,
   });
 
   const { load: loadAudio } = audio;
+  const {
+    useFallbackVoice,
+    retryMainService,
+    reloadCurrentAudio,
+  } = audio;
+
+  const handleRetryMainService = useCallback(() => {
+    announce('Mencoba layanan suara utama.', { key: 'audio-service' });
+    retryMainService();
+  }, [announce, retryMainService]);
+
+  const handleReloadAudio = useCallback(() => {
+    announce('Memuat ulang audio kalimat ini.', { key: 'audio-reload' });
+    reloadCurrentAudio();
+  }, [announce, reloadCurrentAudio]);
 
   /* ============================================================
    * Muat teks ke pemutar
@@ -232,6 +296,7 @@ export default function HomePage() {
       clear();
       setErrorMessage(null);
       setWarnings([]);
+      setStalledInfo(null);
       setDocumentText('');
       setDocumentName(humanizeFileName(file.name));
       setWordCount(0);
@@ -427,6 +492,62 @@ export default function HomePage() {
         </section>
       )}
 
+      {/* ================= Pemulihan pembacaan terhenti ================= */}
+      {/*
+        Muncul hanya saat state 'stalled'. Fokus SENGAJA tidak dipindahkan
+        ke sini — pengguna diberitahu lewat role="alert" dan mencapai
+        tombol lewat Tab normal. Panel hilang otomatis begitu antrean baru
+        berjalan (state bukan lagi 'stalled').
+      */}
+      {audio.state === 'stalled' && stalledInfo && (
+        <section
+          aria-labelledby="terhenti-heading"
+          className="rounded-md border-2 border-danger bg-danger/5 p-4"
+        >
+          <h2 id="terhenti-heading" className="text-lg font-bold text-danger">
+            Pembacaan terhenti di kalimat {stalledInfo.index + 1} dari{' '}
+            {stalledInfo.total}
+          </h2>
+          <p className="mt-2 max-w-reading text-base text-danger">
+            Posisi Anda tersimpan — tidak perlu mengulang dari awal. Pilih
+            cara melanjutkan:
+          </p>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={() => audio.retryCurrent()}
+              className="inline-flex min-h-11 items-center justify-center rounded-md bg-accent px-6 py-3 text-base font-semibold text-white hover:bg-accent-dark"
+            >
+              Ulangi kalimat ini
+            </button>
+            <button
+              type="button"
+              onClick={() => audio.skipNext()}
+              className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
+            >
+              Lewati kalimat ini
+            </button>
+            {!audio.usingFallback ? (
+              <button
+                type="button"
+                onClick={() => audio.useFallbackVoice()}
+                className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
+              >
+                Pakai suara peramban
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => audio.retryMainService()}
+                className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
+              >
+                Coba layanan utama
+              </button>
+            )}
+          </div>
+        </section>
+      )}
+
       {/* ================= Langkah 2: pemutar ================= */}
       <AudioPlayer
         state={audio.state}
@@ -454,6 +575,9 @@ export default function HomePage() {
         onSkipNext={audio.skipNext}
         onSkipPrevious={audio.skipPrevious}
         onGoToSentence={audio.goToSentence}
+        onUseFallbackVoice={useFallbackVoice}
+        onRetryMainService={handleRetryMainService}
+        onReloadAudio={handleReloadAudio}
       />
 
       {/* ================= Langkah 3: teks ================= */}

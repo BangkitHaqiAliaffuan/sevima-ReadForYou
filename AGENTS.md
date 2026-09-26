@@ -48,6 +48,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - All `app/api/*/route.ts` must stay `runtime = 'nodejs'` + `dynamic = 'force-dynamic'` (msedge-tts needs WebSocket/Buffer; edge runtime breaks). Keep `maxDuration` 120 (process-document) / 30 (tts) — do not lower.
 - TTS is per-sentence: one `POST /api/tts` per sentence, each ≤ `MAX_TTS_CHARS` (1000, see `lib/tts/synthesize.ts`). Voice must start with `id-ID-` (default `id-ID-ArdiNeural`); other locales are rejected as `INVALID_VOICE`.
 - `hooks/useServerAudio.ts` falls back to `speechSynthesis` after 3 consecutive TTS failures (`FAILURES_BEFORE_FALLBACK`) — keep that fallback path working.
+- Playback honesty is a correctness rule, not polish: `SpeechState` has `'stalled'`; `runQueue` counts `playedCount` and must NEVER report completion (`ended`/`onComplete`) when 0 sentences played — route to `onInterrupted` instead. Stall watchdog: frozen `currentTime` 10s (`STALL_AFTER_MS`); fetch ceiling 25s (`FETCH_CEILING_MS`). Generation is owned by `runQueue` only — `playSingle` verifies, never bumps.
 
 # Gemini model gotchas
 - `@google/genai` v2: `responseSchema` is DEPRECATED → use `responseJsonSchema` with standard JSON Schema (lowercase `type: 'object'`). See `lib/gemini.ts`.

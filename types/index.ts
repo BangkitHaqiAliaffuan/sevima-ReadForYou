@@ -126,7 +126,7 @@ export interface ApiErrorBody {
  * gagal — sehingga demo tidak bisa mati total di depan juri.
  */
 
-export type SpeechState = 'idle' | 'loading' | 'speaking' | 'paused' | 'ended';
+export type SpeechState = 'idle' | 'loading' | 'speaking' | 'paused' | 'stalled' | 'ended';
 
 export interface SentenceChunk {
   index: number;

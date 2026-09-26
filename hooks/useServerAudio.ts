@@ -62,7 +62,24 @@ export interface UseServerAudioOptions {
   /** Dipanggil sekali bila beralih ke suara bawaan peramban. */
   onFallbackActivated?: () => void;
   /** Dipanggil sekali setiap audio awal selesai disiapkan (siap diputar). */
-  onAudioReady?: () => void;
+  onAudioReady?: (info: { usingFallback: boolean }) => void;
+  /**
+   * Dipanggil sekali ketika pembacaan TERHENTI sebelum selesai — bukan
+   * selesai. `index`/`total` posisi macet, `playedCount` berapa kalimat
+   * yang sempat terbaca (bisa 0), `reason` penyebabnya.
+   */
+  onInterrupted?: (info: {
+    index: number;
+    total: number;
+    playedCount: number;
+    reason: 'stall' | 'failed';
+  }) => void;
+  /**
+   * Dipanggil bila pengambilan audio satu kalimat melebihi ambang wajar.
+   * Untuk status jujur "Menunggu audio…" — bedakan "menunggu" dari
+   * "berbicara" dan dari "macet".
+   */
+  onSentenceWaiting?: (index: number, total: number) => void;
 }
 
 export interface UseServerAudioResult {
@@ -91,6 +108,14 @@ export interface UseServerAudioResult {
   pause: () => void;
   resume: () => void;
   stop: () => void;
+  /** Putar ulang dari posisi macet saat ini (pemulihan dari 'stalled'). */
+  retryCurrent: () => void;
+  /** Beralih manual ke suara bawaan peramban, lanjutkan dari posisi kini. */
+  useFallbackVoice: () => void;
+  /** Kembali mencoba layanan utama, lanjutkan dari posisi kini. */
+  retryMainService: () => void;
+  /** Buang audio kalimat kini dan ambil ulang (pemulihan manual). */
+  reloadCurrentAudio: () => void;
   goToSentence: (index: number) => void;
   skipNext: () => void;
   skipPrevious: () => void;
@@ -105,6 +130,28 @@ const FAILURES_BEFORE_FALLBACK = 3;
  * dua berikutnya sudah dicover preload — pemutaran kontinu tanpa jeda.
  */
 const PREFETCH_BEFORE_READY = 3;
+
+/**
+ * Pengawas macet: posisi audio yang beku selama ini (tanpa ended/error)
+ * dinyatakan stall. 10 detik memberi ruang untuk TTS 1-3 dtk/kalimat
+ * plus margin jaringan seluler, tanpa membiarkan pengguna menunggu lama.
+ */
+const STALL_CHECK_MS = 2_000;
+const STALL_AFTER_MS = 10_000;
+
+/**
+ * Plafon tunggu fetch per kalimat di klien. Timeout 20 dtk hanya ada di
+ * server; gantung level jaringan (tanpa respons sama sekali) lolos dari
+ * keduanya — plafon ini memastikan status 'loading' tak abadi.
+ */
+const FETCH_CEILING_MS = 25_000;
+
+/**
+ * Ambang pengumuman "Menunggu audio…". TTS wajar 1-3 dtk/kalimat; bila
+ * pengambilan satu kalimat melewati ini, hening perlu dijelaskan agar
+ * tidak disangka macet. Pengumuman polite + keyed (tidak membanjiri).
+ */
+const SENTENCE_WAIT_NOTICE_MS = 3_000;
 
 /**
  * Dilempar ketika server menjawab 429. Berbeda dari galat lain: kegagalan
@@ -139,6 +186,8 @@ export function useServerAudio(
     onError,
     onFallbackActivated,
     onAudioReady,
+    onInterrupted,
+    onSentenceWaiting,
   } = options;
 
   const [state, setState] = useState<SpeechState>('idle');
@@ -177,6 +226,7 @@ export function useServerAudio(
   /** Melacak apakah kesiapan audio sudah diumumkan untuk teks saat ini. */
   const audioReadyFiredRef = useRef(false);
   const onAudioReadyRef = useRef<UseServerAudioOptions['onAudioReady']>(undefined);
+  const onInterruptedRef = useRef<UseServerAudioOptions['onInterrupted']>(undefined);
 
   const updateState = useCallback(
     (next: SpeechState) => {
@@ -298,15 +348,11 @@ export function useServerAudio(
       onFallbackActivated?.();
       console.warn('[useServerAudio] beralih ke suara bawaan peramban:', reason);
 
-      // Beri tahu pengguna dengan jujur apa yang terjadi. Menyembunyikan
-      // penurunan kualitas akan membuat mereka mengira suara barunya
-      // memang begitu — padahal ada masalah teknis.
-      onError?.(
-        'Layanan suara utama sedang bermasalah. Sistem beralih memakai suara ' +
-          'bawaan peramban agar pembacaan tetap berjalan. Kualitas suara mungkin berbeda.',
-      );
+      // SENGAJA hanya satu jalur pengumuman (onFallbackActivated).
+      // Versi lama juga memanggil onError di sini sehingga pengguna screen
+      // reader menerima dua interupsi assertive beruntun untuk satu kejadian.
     },
-    [onError, onFallbackActivated],
+    [onFallbackActivated],
   );
 
   /* ============================================================
@@ -418,6 +464,11 @@ export function useServerAudio(
       const controller = new AbortController();
       pendingFetchesRef.current.set(index, controller);
 
+      // Plafon: fetch yang menggantung di level jaringan (tanpa respons
+      // sama sekali) tidak boleh menahan status 'loading' selamanya.
+      // Abort di sini ditangani seperti kegagalan biasa di bawah.
+      const ceiling = setTimeout(() => controller.abort(), FETCH_CEILING_MS);
+
       const task = (async (): Promise<string | null> => {
         try {
           try {
@@ -460,6 +511,7 @@ export function useServerAudio(
           }
           return null;
         } finally {
+          clearTimeout(ceiling);
           pendingFetchesRef.current.delete(index);
         }
       })();
@@ -551,15 +603,17 @@ export function useServerAudio(
    * generasi per invokasi antrean). Tugas fungsi ini hanya MEMVERIFIKASI
    * bahwa generasinya masih berlaku di setiap titik await.
    *
-   * Mengembalikan 'played' bila audio mulai berbunyi, 'failed' bila
+   * Mengembalikan 'played' bila audio selesai berbunyi, 'failed' bila
    * kalimat ini tidak dapat diputar sehingga pemanggil perlu melanjutkan,
-   * atau 'superseded' bila antrean ini sudah digantikan antrean baru.
+   * 'stalled' bila pemutaran macet terkonfirmasi (butuh pemulihan eksplisit,
+   * JANGAN dilewati diam-diam), atau 'superseded' bila antrean ini sudah
+   * digantikan antrean baru.
    */
   const playSingle = useCallback(
     async (
       index: number,
       generation: number,
-    ): Promise<'played' | 'failed' | 'superseded'> => {
+    ): Promise<'played' | 'failed' | 'stalled' | 'superseded'> => {
       const list = chunksRef.current;
       const chunk = list[index];
       if (!chunk) return 'failed';
@@ -572,7 +626,25 @@ export function useServerAudio(
       onSentenceChange?.(index, chunk.text);
       updateState('loading');
 
+      /*
+       * Status jujur saat pengambilan lambat: bila audio kalimat ini tak
+       * kunjung siap melewati ambang, beri tahu pengguna bahwa sistem
+       * sedang menunggu (bukan diam, bukan macet). Timer dibersihkan
+       * begitu fetch selesai; pemeriksaan generasi + status mencegah
+       * pengumuman basi bila antrean sudah berganti.
+       */
+      let waitingTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        waitingTimer = null;
+        if (generationRef.current === generation && stateRef.current === 'loading') {
+          onSentenceWaiting?.(index, list.length);
+        }
+      }, SENTENCE_WAIT_NOTICE_MS);
+
       const url = await ensureAudio(index);
+      if (waitingTimer !== null) {
+        clearTimeout(waitingTimer);
+        waitingTimer = null;
+      }
 
       // Pengguna mungkin menekan Hentikan selagi kita menunggu.
       if (generationRef.current !== generation) return 'superseded';
@@ -582,27 +654,32 @@ export function useServerAudio(
       const audio = getAudioElement();
       audio.src = url;
 
-      const finished = new Promise<'ended' | 'error'>((resolve) => {
+      let resolveFinished: ((value: 'ended' | 'error' | 'stalled') => void) | null =
+        null;
+      const finished = new Promise<'ended' | 'error' | 'stalled'>((resolve) => {
+        resolveFinished = resolve;
         audio.onended = () => resolve('ended');
         audio.onerror = () => resolve('error');
       });
 
+      /*
+       * Percobaan play dapat ditolak kebijakan autoplay (terutama Safari
+       * ketat) karena terjadi setelah await fetch. Coba sekali lagi di
+       * kalimat yang SAMA; bila tetap ditolak, nyatakan macet agar pengguna
+       * mendapat panel pemulihan — bukan skip diam-diam yang berujung
+       * "selesai" palsu.
+       */
       try {
         await audio.play();
       } catch {
-        /*
-         * Kegagalan `play()` biasanya karena kebijakan autoplay. Karena
-         * pemutaran selalu berawal dari tombol (interaksi pengguna),
-         * kasus ini jarang — tetapi tetap harus ditangani dengan pesan
-         * yang memberi tahu langkah berikutnya.
-         */
-        if (generationRef.current === generation) {
-          updateState('idle');
-          onError?.(
-            'Peramban menahan pemutaran otomatis. Tekan tombol Putar sekali lagi.',
-          );
+        try {
+          await audio.play();
+        } catch {
+          if (generationRef.current === generation) {
+            updateState('stalled');
+          }
+          return 'stalled';
         }
-        return 'failed';
       }
 
       if (generationRef.current !== generation) {
@@ -615,9 +692,47 @@ export function useServerAudio(
       // menghilangkan jeda antar kalimat.
       preloadAhead(index);
 
+      /*
+       * Pengawas macet: stream yang stall tidak memicu ended/error,
+       * sehingga tanpa ini antrean menggantung dalam status 'speaking'
+       * selamanya. Bila posisi audio beku selama STALL_AFTER_MS,
+       * nyatakan macet. Jeda (pause) membekukan baseline agar lanjutan
+       * setelahnya tidak salah vonis.
+       */
+      let lastTime = audio.currentTime;
+      let frozenMs = 0;
+      const stallTimer = setInterval(() => {
+        if (generationRef.current !== generation) {
+          clearInterval(stallTimer);
+          return;
+        }
+        if (stateRef.current !== 'speaking') {
+          lastTime = audio.currentTime;
+          frozenMs = 0;
+          return;
+        }
+        if (audio.currentTime === lastTime) {
+          frozenMs += STALL_CHECK_MS;
+        } else {
+          frozenMs = 0;
+          lastTime = audio.currentTime;
+        }
+        if (frozenMs >= STALL_AFTER_MS) {
+          clearInterval(stallTimer);
+          audio.pause();
+          resolveFinished?.('stalled');
+        }
+      }, STALL_CHECK_MS);
+
       const outcome = await finished;
+      clearInterval(stallTimer);
 
       if (generationRef.current !== generation) return 'superseded';
+
+      if (outcome === 'stalled') {
+        updateState('stalled');
+        return 'stalled';
+      }
 
       if (outcome === 'error') {
         onError?.(
@@ -628,7 +743,7 @@ export function useServerAudio(
 
       return 'played';
     },
-    [ensureAudio, getAudioElement, onError, onSentenceChange, preloadAhead, updateState],
+    [ensureAudio, getAudioElement, onError, onSentenceChange, onSentenceWaiting, preloadAhead, updateState],
   );
 
   /**
@@ -649,6 +764,7 @@ export function useServerAudio(
       generationRef.current = generation;
 
       let index = startIndex;
+      let playedCount = 0;
 
       while (index < chunksRef.current.length) {
         if (usingFallbackRef.current) {
@@ -664,6 +780,18 @@ export function useServerAudio(
         // telah mengambil alih di tengah jalan.
         if (generationRef.current !== generation) return;
 
+        // Macet terkonfirmasi (watchdog / play ditolak): JANGAN lanjutkan
+        // diam-diam. Laporkan posisi agar pengguna memulihkan dengan tepat.
+        if (outcome === 'stalled') {
+          onInterruptedRef.current?.({
+            index,
+            total: chunksRef.current.length,
+            playedCount,
+            reason: 'stall',
+          });
+          return;
+        }
+
         if (outcome === 'failed') {
           // Beralih ke mode cadangan bila kegagalan sudah menumpuk.
           if (usingFallbackRef.current) {
@@ -675,7 +803,24 @@ export function useServerAudio(
           continue;
         }
 
+        playedCount += 1;
         index += 1;
+      }
+
+      /*
+       * Nol kalimat terbaca = JANGAN umumkan selesai. Mengumumkan
+       * "selesai" di sini adalah kebohongan status bagi pengguna yang
+       * tidak bisa melihat layar. Ini kegagalan terminal.
+       */
+      if (playedCount === 0) {
+        updateState('stalled');
+        onInterruptedRef.current?.({
+          index: startIndex,
+          total: chunksRef.current.length,
+          playedCount,
+          reason: 'failed',
+        });
+        return;
       }
 
       updateState('ended');
@@ -759,8 +904,14 @@ export function useServerAudio(
     // klik kedua melahirkan antrean tandingan yang saling membatalkan
     // dengan antrean pertama hingga tidak ada bunyi sama sekali.
     if (current === 'speaking' || current === 'loading') return;
-    const startAt = current === 'paused' || current === 'ended' ? indexRef.current : 0;
-    void runQueue(current === 'ended' ? 0 : startAt);
+    // Dari 'stalled', lanjutkan di posisi macet — jangan ulang dari awal.
+    // Memulai ulang dokumen panjang dari nol sebagai respons atas macet
+    // adalah hukuman bagi pengguna screen reader.
+    const resumeAt =
+      current === 'paused' || current === 'ended' || current === 'stalled'
+        ? indexRef.current
+        : 0;
+    void runQueue(current === 'ended' ? 0 : resumeAt);
   }, [runQueue]);
 
   const pause = useCallback(() => {
@@ -814,6 +965,92 @@ export function useServerAudio(
     updateState('idle');
   }, [clearProgressTimer, updateState]);
 
+  /* ============================================================
+   * Pemulihan dari macet — kontrol eksplisit untuk pengguna
+   * ============================================================ */
+
+  /**
+   * Ulangi dari posisi macet saat ini. Dipakai tombol "Ulangi kalimat
+   * ini" pada panel pemulihan: antrean baru (= gesture baru) sehingga
+   * penolakan autoplay sebelumnya tidak terulang.
+   */
+  const retryCurrent = useCallback(() => {
+    if (chunksRef.current.length === 0) return;
+    void runQueue(indexRef.current);
+  }, [runQueue]);
+
+  /**
+   * Beralih manual ke suara bawaan peramban dan lanjutkan dari posisi
+   * kini — tanpa menunggu 3 kegagalan beruntun. Dipakai tombol
+   * "Pakai suara peramban" pada panel pemulihan.
+   */
+  const useFallbackVoice = useCallback(() => {
+    if (chunksRef.current.length === 0) return;
+    activateFallback('dipilih manual oleh pengguna');
+    generationRef.current += 1;
+    audioElementRef.current?.pause();
+    clearProgressTimer();
+    speakWithBrowserVoice(indexRef.current);
+  }, [activateFallback, clearProgressTimer, speakWithBrowserVoice]);
+
+  /**
+   * Kembali mencoba layanan utama dari posisi kini. Me-reset flag
+   * fallback dan penghitung kegagalan; antrean baru memakai suara server.
+   * Dipakai tombol "Coba layanan utama".
+   */
+  const retryMainService = useCallback(() => {
+    if (chunksRef.current.length === 0) return;
+    usingFallbackRef.current = false;
+    setUsingFallback(false);
+    consecutiveFailuresRef.current = 0;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    const current = stateRef.current;
+    if (
+      current === 'speaking' ||
+      current === 'loading' ||
+      current === 'paused' ||
+      current === 'stalled'
+    ) {
+      void runQueue(indexRef.current);
+    }
+  }, [runQueue]);
+
+  /**
+   * Buang audio kalimat kini dan ambil ulang. Untuk pemulihan manual
+   * ("Muat ulang audio"): bila antrean aktif, kalimat diputar ulang dari
+   * hasil fetch baru; bila idle, cache dihangatkan tanpa memutar.
+   *
+   * Abort + hapus janji lama dulu agar fetch basi yang menggantung tidak
+   * dipakai ulang. Duplikat request sesekali (fetch lama yang ternyata
+   * berhasil tetap menulis cache segar — suara sama, kalimat sama) dapat
+   * diterima dan tidak bocor berarti.
+   */
+  const reloadCurrentAudio = useCallback(() => {
+    if (chunksRef.current.length === 0) return;
+    const idx = indexRef.current;
+    const cached = audioCacheRef.current.get(idx);
+    if (cached) {
+      URL.revokeObjectURL(cached);
+      audioCacheRef.current.delete(idx);
+      setReadyCount(audioCacheRef.current.size);
+    }
+    pendingFetchesRef.current.get(idx)?.abort();
+    pendingAudioRef.current.delete(idx);
+    const current = stateRef.current;
+    if (
+      current === 'speaking' ||
+      current === 'loading' ||
+      current === 'paused' ||
+      current === 'stalled'
+    ) {
+      void runQueue(idx);
+    } else {
+      void ensureAudio(idx, true);
+    }
+  }, [ensureAudio, runQueue]);
+
   const goToSentence = useCallback(
     (index: number) => {
       const clamped = Math.max(0, Math.min(index, chunksRef.current.length - 1));
@@ -823,7 +1060,8 @@ export function useServerAudio(
       if (
         stateRef.current === 'speaking' ||
         stateRef.current === 'paused' ||
-        stateRef.current === 'loading'
+        stateRef.current === 'loading' ||
+        stateRef.current === 'stalled'
       ) {
         void runQueue(clamped);
       }
@@ -894,6 +1132,7 @@ export function useServerAudio(
   // Sinkronkan callback tanpa mengikat identitasnya ke effect di bawah.
   useEffect(() => {
     onAudioReadyRef.current = onAudioReady;
+    onInterruptedRef.current = onInterrupted;
   });
 
   // Umumkan transisi belum-siap -> siap tepat sekali per teks/suara.
@@ -904,7 +1143,7 @@ export function useServerAudio(
     }
     if (audioReadyFiredRef.current) return;
     audioReadyFiredRef.current = true;
-    onAudioReadyRef.current?.();
+    onAudioReadyRef.current?.({ usingFallback: usingFallbackRef.current });
   }, [isAudioReady]);
 
   return {
@@ -930,6 +1169,10 @@ export function useServerAudio(
     pause,
     resume,
     stop,
+    retryCurrent,
+    useFallbackVoice,
+    retryMainService,
+    reloadCurrentAudio,
     goToSentence,
     skipNext,
     skipPrevious,

@@ -56,6 +56,12 @@ export interface AudioPlayerProps {
   onSkipNext: () => void;
   onSkipPrevious: () => void;
   onGoToSentence: (index: number) => void;
+  /** Beralih manual ke suara peramban. */
+  onUseFallbackVoice: () => void;
+  /** Kembali mencoba layanan utama. */
+  onRetryMainService: () => void;
+  /** Buang dan ambil ulang audio kalimat kini. */
+  onReloadAudio: () => void;
 }
 
 export function AudioPlayer(props: AudioPlayerProps) {
@@ -85,6 +91,9 @@ export function AudioPlayer(props: AudioPlayerProps) {
     onSkipNext,
     onSkipPrevious,
     onGoToSentence,
+    onUseFallbackVoice,
+    onRetryMainService,
+    onReloadAudio,
   } = props;
 
   const headingId = useId();
@@ -108,6 +117,7 @@ export function AudioPlayer(props: AudioPlayerProps) {
   const isSpeaking = state === 'speaking';
   const isPaused = state === 'paused';
   const isLoading = state === 'loading';
+  const isStalled = state === 'stalled';
   /** Teks ada tapi audio awal belum cukup — Putar diblokir sementara. */
   const preparingAudio = isReady && !isAudioReady;
 
@@ -159,7 +169,9 @@ export function AudioPlayer(props: AudioPlayerProps) {
           label={
             preparingAudio
               ? `Menyiapkan audio, ${prefetchReady} dari ${prefetchNeeded} kalimat siap`
-              : 'Putar pembacaan dari awal'
+              : isStalled
+                ? `Ulangi dari kalimat ${currentIndex + 1}`
+                : 'Putar pembacaan dari awal'
           }
         >
           <PlayIcon />
@@ -268,6 +280,40 @@ export function AudioPlayer(props: AudioPlayerProps) {
         </div>
       )}
 
+      {/* ---------- Layanan suara ---------- */}
+      {/*
+        Kontrol manual lintas mode: pengguna boleh berpindah layanan kapan
+        pun tanpa menunggu kegagalan beruntun. Teks terlihat (bukan ikon
+        saja) agar jelas bagi semua pengguna.
+      */}
+      {isReady && (
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-base text-muted">
+            Layanan suara:{' '}
+            <span className="font-semibold text-foreground">
+              {usingFallback ? 'Suara peramban (cadangan)' : 'Microsoft Edge (utama)'}
+            </span>
+          </p>
+          {!usingFallback ? (
+            <PlayerButton
+              onClick={onUseFallbackVoice}
+              ariaDisabled={false}
+              label="Beralih ke suara bawaan peramban dan lanjutkan dari kalimat ini"
+            >
+              <span>Pakai suara peramban</span>
+            </PlayerButton>
+          ) : (
+            <PlayerButton
+              onClick={onRetryMainService}
+              ariaDisabled={false}
+              label="Kembali mencoba layanan suara utama dari kalimat ini"
+            >
+              <span>Coba layanan utama</span>
+            </PlayerButton>
+          )}
+        </div>
+      )}
+
       {/* ---------- Pengaturan ---------- */}
       <SettingsPanel
         voices={voices}
@@ -311,6 +357,15 @@ export function AudioPlayer(props: AudioPlayerProps) {
               aria-valuetext={`Kalimat ${displayPosition} dari ${totalSentences}`}
               className="mt-2 h-11 w-full max-w-md cursor-pointer accent-accent"
             />
+            <div className="mt-3">
+              <PlayerButton
+                onClick={onReloadAudio}
+                ariaDisabled={notReady}
+                label="Muat ulang audio kalimat yang sedang dipilih"
+              >
+                <span>Muat ulang audio</span>
+              </PlayerButton>
+            </div>
           </div>
         )}
       </details>

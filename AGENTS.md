@@ -20,8 +20,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # Structure
 - App Router: `app/layout.tsx`, `app/page.tsx`, `app/api/{process-document,tts,voices}/route.ts`
-- `components/UploadModule.tsx`, `components/AudioPlayer.tsx`, `components/LiveStatus.tsx`
-- `hooks/useServerAudio.ts` (sentence queue + preload + speechSynthesis fallback), `hooks/useAnnouncer.ts`
+- `components/UploadModule.tsx`, `components/AudioPlayer.tsx`, `components/LiveStatus.tsx`, `components/AuthPanel.tsx`, `components/DocumentHistory.tsx`
+- `hooks/useServerAudio.ts` (sentence queue + preload + speechSynthesis fallback), `hooks/useAnnouncer.ts`, `hooks/useSession.ts` (sole auth-state source)
+- `middleware.ts` (Supabase cookie session refresh; never blocks guests)
 - `lib/supabase.ts`, `lib/gemini.ts`, `lib/rate-limit.ts`, `lib/chunk-text.ts`, `lib/validate-file.ts`, `lib/api-error.ts`, `lib/tts/{synthesize,estimate}.ts`
 - Path alias: `@/*` → repo root (`./*`), per `tsconfig.json`
 - Styling: Tailwind v4 — `@import "tailwindcss"` in `app/globals.css` (NO `tailwind.config.ts` — v4 ignores it)
@@ -67,5 +68,16 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - All icons `aria-hidden="true"` + `focusable="false"` with visually hidden text; touch targets ≥ 44px (`min-h-11`).
 - `app/layout.tsx`: keep `lang="id"`, skip link as first focusable element, `maximumScale: 5` (never 1 — kills zoom, WCAG 1.4.4).
 
-# MVP auth warning
-- No Supabase Auth yet: `mvp_anon_*` RLS policies let anon upload/insert. Bucket has NO anon SELECT (server downloads via service_role). Do not add anon read policies or ship to production without auth — see README "Mengaktifkan Auth" (`owner_*` policies + `createRouteHandlerSupabase` are ready).
+# Auth model (anon + email, guest allowed)
+- Entry: `components/AuthPanel.tsx` (1-tap `signInAnonymously`, upgrade via `updateUser({email,password})` — NOT `linkIdentity`, which in installed auth-js only supports OAuth/IdToken), session via `hooks/useSession.ts`, cookie refresh in `middleware.ts`.
+- Upload scope is `user.id ?? 'anonim'` and insert sets `user_id` (`app/page.tsx`); storage prefix enforced server-side too. Run `supabase/schema.sql` then `supabase/migration_auth_anon.sql` on the project (narrows `mvp_anon_select` to `user_id IS NULL`, locks anon uploads to `anonim/`).
+- `app/api/process-document/route.ts` verifies ownership (`row.user_id === session uid`, legacy NULL rows allowed session-less) and keys rate limit per `user:<id>` (guests per IP). `/api/tts` stays IP-limited on purpose (per-sentence `getUser` would be wasteful; no user data involved).
+- Dashboard prerequisite: enable Anonymous Sign-Ins + Email providers, or guest sign-in fails with a friendly message.
+
+# File claims (multi-session — WAJIB sebelum edit file apa pun)
+- `claims.md` di root adalah registry-nya. SEBELUM mengedit: baca `claims.md` dulu.
+- Tanpa baris = bebas → tulis baris `claimed` (Owner = id sesimu, cth `2026-09-26-topik`, + Updated hari ini) SEBELUM menyentuh file. Klaim semua file target di awal, bukan satu-per-satu.
+- `done` = boleh edit (ganti dulu ke `claimed` milikmu). `claimed` milik sesi lain yang fresh (<30 menit) = JANGAN sentuh — tunggu atau tanya user via question tool.
+- Klaim >30 menit tanpa update = stale → boleh ambil alih, catat di kolom Note.
+- Selesai + terverifikasi (`tsc`/`lint`/`build`) → ubah ke `done` + tulis bukti (hash commit) di Note.
+- Jangan klaim: `claims.md` itu sendiri (edit langsung tanpa klaim), `/docs/`, `.env*`, file untracked milik alur lain.

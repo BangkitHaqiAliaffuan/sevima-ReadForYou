@@ -279,17 +279,33 @@ sudah dibuat kecil agar penggantian hanya menyentuh satu berkas.
 
 ---
 
-## Mengaktifkan Auth di kemudian hari
+## Autentikasi (anonim + email, tamu tetap boleh)
 
-`lib/supabase.ts` sudah menyediakan `createRouteHandlerSupabase` berbasis
-cookie, dan `supabase/schema.sql` sudah memuat kebijakan `owner_*` yang siap
-dipakai. Langkahnya:
+Aplikasi memakai tiga mode dalam satu alur:
 
-1. Aktifkan Supabase Auth pada proyek.
-2. Ubah `user_id: null` di `app/page.tsx` menjadi `user.id` dari sesi.
-3. Di `app/api/process-document/route.ts`, setelah mengambil baris dokumen,
-   tambahkan pemeriksaan bahwa `data.user_id === user.id`.
-4. Hapus kebijakan `mvp_anon_*` dari `supabase/schema.sql` dan terapkan ulang.
+1. **Tamu tanpa masuk** — langsung unggah; riwayat tidak tersimpan.
+2. **Tamu anonim** — satu ketukan "Masuk sebagai tamu"
+   (`signInAnonymously`, tanpa formulir agar ramah screen reader);
+   berkas terikat uid anonim dan memiliki riwayat.
+3. **Akun permanen** — upgrade dari tamu via `updateUser({ email,
+   password })` sehingga uid dan riwayat tetap sama; perangkat lain
+   memakai "Masuk dengan email" (`signInWithPassword`).
+
+Prasyarat dasbor Supabase (sekali saja):
+
+1. **Authentication → Providers** → aktifkan **Anonymous Sign-Ins**
+   dan **Email**.
+2. **SQL Editor** → jalankan `supabase/schema.sql` (bila belum),
+   lalu `supabase/migration_auth_anon.sql`. Migrasi ini mempersempit
+   `mvp_anon_select` ke baris tanpa pemilik (`user_id IS NULL`) dan
+   mengunci unggahan anon ke folder `anonim/` — tanpa ini, tamu tanpa
+   sesi dapat membaca dokumen milik akun lain.
+
+Penegakan di kode: `middleware.ts` menyegarkan sesi cookie,
+`app/api/process-document/route.ts` memverifikasi `user_id` pemilik
+(milik akun lain ditolak sebagai "tidak ditemukan") dan memvalidasi
+prefix folder path fallback. Rate limit per akun (`user:<id>`) untuk
+yang masuk, per IP untuk tamu.
 
 ---
 

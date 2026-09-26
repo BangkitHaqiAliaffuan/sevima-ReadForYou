@@ -25,10 +25,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AudioPlayer } from '@/components/AudioPlayer';
+import { AuthPanel } from '@/components/AuthPanel';
+import { DocumentHistory } from '@/components/DocumentHistory';
 import { LiveStatus, StatusBanner } from '@/components/LiveStatus';
 import { ProgressBar, UploadModule } from '@/components/UploadModule';
 import { useAnnouncer } from '@/hooks/useAnnouncer';
 import { useServerAudio } from '@/hooks/useServerAudio';
+import { useSession } from '@/hooks/useSession';
 import { formatDuration } from '@/lib/chunk-text';
 import {
   buildStoragePath,
@@ -50,6 +53,10 @@ const PROGRESS_STEP_PERCENT = 10;
 
 export default function HomePage() {
   const { politeMessage, assertiveMessage, announce, clear } = useAnnouncer();
+  const { user, isAnonymous, loading: sessionLoading } = useSession();
+
+  /* Id stabil untuk deps memo + scope storage (hindari optional-chain di deps). */
+  const sessionUserId = user?.id ?? null;
 
   const [stage, setStage] = useState<PipelineStage>('idle');
   const [uploadPercent, setUploadPercent] = useState<number | null>(null);
@@ -69,6 +76,12 @@ export default function HomePage() {
 
   /** Menaikkan nilai ini memicu fokus kembali ke input berkas. */
   const [focusInputSignal, setFocusInputSignal] = useState(0);
+
+  /**
+   * Menaikkan nilai ini memicu fokus ke judul hasil saat teks dimuat ulang
+   * dari riwayat (stage sudah 'ready' sehingga efek stage saja tak cukup).
+   */
+  const [replaySignal, setReplaySignal] = useState(0);
 
   const resultHeadingRef = useRef<HTMLHeadingElement>(null);
   const lastAnnouncedPercent = useRef(0);
@@ -257,7 +270,7 @@ export default function HomePage() {
        */
       resultHeadingRef.current.focus();
     }
-  }, [stage]);
+  }, [stage, replaySignal]);
 
   /* ============================================================
    * Pengumuman progres
@@ -314,7 +327,15 @@ export default function HomePage() {
         );
 
         const supabase = getBrowserSupabase();
-        const path = buildStoragePath({ scope: 'anonim', fileName: file.name });
+        /*
+         * Berkas milik pengguna yang masuk disimpan di bawah folder uid-nya
+         * agar cocok dengan kebijakan storage `owner_*_files`. Tamu murni
+         * tanpa sesi memakai folder 'anonim' (kebijakan `mvp_anon_upload`).
+         */
+        const path = buildStoragePath({
+          scope: sessionUserId ?? 'anonim',
+          fileName: file.name,
+        });
 
         const uploadResult = await uploadWithProgress(supabase, path, file, (percent) => {
           setUploadPercent(percent);
@@ -331,7 +352,7 @@ export default function HomePage() {
         const insertResult = await supabase
           .from('documents')
           .insert({
-            user_id: null, // MVP tanpa Auth
+            user_id: sessionUserId,
             file_path: path,
             file_name: humanizeFileName(file.name),
             mime_type: file.type || 'application/octet-stream',
@@ -409,7 +430,29 @@ export default function HomePage() {
         busyRef.current = false;
       }
     },
-    [announce, announceProgress, clear],
+    [announce, announceProgress, clear, sessionUserId],
+  );
+
+  /**
+   * Muat ulang bacaan tersimpan dari riwayat ke pemutar + tampilan teks.
+   * Fokus ke judul hasil ditangani efek [stage, replaySignal].
+   */
+  const handleReplaySelected = useCallback(
+    (item: { text: string; name: string; wordCount: number }) => {
+      clear();
+      setErrorMessage(null);
+      setWarnings([]);
+      setDocumentText(item.text);
+      setDocumentName(item.name);
+      setWordCount(item.wordCount);
+      setStage('ready');
+      setReplaySignal((value) => value + 1);
+      announce(
+        `Bacaan ${item.name} dimuat ulang, berisi ${item.wordCount} kata. Pemutar suara siap digunakan.`,
+        { key: 'status' },
+      );
+    },
+    [announce, clear],
   );
 
   /* ============================================================
@@ -431,6 +474,14 @@ export default function HomePage() {
       <LiveStatus
         politeMessage={politeMessage}
         assertiveMessage={assertiveMessage}
+      />
+
+      {/* ================= Status masuk (tamu / akun) ================= */}
+      <AuthPanel
+        user={user}
+        isAnonymous={isAnonymous}
+        loading={sessionLoading}
+        announce={announce}
       />
 
       {/* ================= Langkah 1: unggah ================= */}
@@ -621,6 +672,13 @@ export default function HomePage() {
           </p>
         )}
       </section>
+
+      {/* ================= Riwayat bacaan (bila masuk) ================= */}
+      <DocumentHistory
+        userId={sessionUserId}
+        onReplay={handleReplaySelected}
+        announce={announce}
+      />
     </>
   );
 }

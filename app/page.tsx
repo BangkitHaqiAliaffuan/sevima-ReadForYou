@@ -1,69 +1,646 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+/**
+ * app/page.tsx — halaman utama
+ * ============================
+ *
+ * Mengorkestrasi seluruh alur:
+ *
+ *   1. Unggah berkas ke Supabase Storage dengan progres yang diumumkan.
+ *   2. Panggil /api/process-document untuk mengekstrak teks via Gemini.
+ *   3. Tampilkan teks dan aktifkan pemutar suara (msedge-tts lewat /api/tts).
+ *
+ * FOKUS UTAMA HALAMAN INI ADALAH AKSESIBILITAS:
+ *
+ *  - Setiap perubahan tahap diumumkan lewat LiveStatus, bukan hanya
+ *    ditunjukkan lewat pemintal (spinner) visual.
+ *  - Fokus dipindahkan secara sengaja pada momen yang tepat: ke judul
+ *    hasil ketika teks siap, dan kembali ke input berkas ketika gagal.
+ *    Pemindahan fokus dilakukan di useEffect karena pada saat handler
+ *    berjalan, elemen tujuan belum tentu sudah ada di DOM.
+ *  - Galat selalu berupa kalimat lengkap dalam bahasa Indonesia yang
+ *    menjelaskan langkah berikutnya, bukan kode kesalahan.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { AudioPlayer } from '@/components/AudioPlayer';
+import { LiveStatus, StatusBanner } from '@/components/LiveStatus';
+import { ProgressBar, UploadModule } from '@/components/UploadModule';
+import { useAnnouncer } from '@/hooks/useAnnouncer';
+import { useServerAudio } from '@/hooks/useServerAudio';
+import { formatDuration } from '@/lib/chunk-text';
+import {
+  buildStoragePath,
+  getBrowserSupabase,
+  humanizeFileName,
+  STORAGE_BUCKET,
+} from '@/lib/supabase';
+import { formatMegabytes } from '@/lib/validate-file';
+import type {
+  ApiErrorBody,
+  PipelineStage,
+  ProcessDocumentResponse,
+  SpeechState,
+  VoiceOption,
+} from '@/types';
+
+/** Interval pengumuman progres: jangan lebih rapat dari ini. */
+const PROGRESS_STEP_PERCENT = 10;
+
+export default function HomePage() {
+  const { politeMessage, assertiveMessage, announce, clear } = useAnnouncer();
+
+  const [stage, setStage] = useState<PipelineStage>('idle');
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [documentText, setDocumentText] = useState('');
+  const [documentName, setDocumentName] = useState('');
+  const [wordCount, setWordCount] = useState(0);
+  const [warnings, setWarnings] = useState<string[]>([]);
+
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const [voicesUnavailable, setVoicesUnavailable] = useState(false);
+
+  /** Menaikkan nilai ini memicu fokus kembali ke input berkas. */
+  const [focusInputSignal, setFocusInputSignal] = useState(0);
+
+  const resultHeadingRef = useRef<HTMLHeadingElement>(null);
+  const lastAnnouncedPercent = useRef(0);
+  /** Mencegah pemrosesan ganda ketika pengguna menekan tombol dua kali. */
+  const busyRef = useRef(false);
+
+  const busy = stage === 'uploading' || stage === 'extracting';
+
+  /* ============================================================
+   * Pemutar suara
+   * ============================================================ */
+
+  const handleStateChange = useCallback(
+    (state: SpeechState) => {
+      if (state === 'loading') {
+        announce('Sedang menyiapkan suara untuk kalimat ini.', { key: 'tts' });
+      } else if (state === 'speaking') {
+        announce('Mulai membacakan teks.', { key: 'tts' });
+      } else if (state === 'paused') {
+        announce('Pembacaan dijeda.', { key: 'tts' });
+      }
+      // 'idle' sengaja tidak diumumkan: keadaan itu juga muncul saat
+      // memuat teks baru, dan pengumuman di sana hanya menambah kebisingan.
+    },
+    [announce],
+  );
+
+  const handleComplete = useCallback(() => {
+    announce('Pembacaan teks selesai.', { key: 'tts' });
+  }, [announce]);
+
+  const handleAudioError = useCallback(
+    (message: string) => {
+      setErrorMessage(message);
+      announce(message, { priority: 'assertive', key: 'audio-error' });
+    },
+    [announce],
+  );
+
+  const handleFallbackActivated = useCallback(() => {
+    announce(
+      'Layanan suara utama tidak dapat dihubungi. Sistem beralih memakai ' +
+        'suara bawaan peramban agar pembacaan tetap berjalan.',
+      { priority: 'assertive', key: 'audio-fallback' },
+    );
+  }, [announce]);
+
+  const audio = useServerAudio({
+    onStateChange: handleStateChange,
+    onComplete: handleComplete,
+    onError: handleAudioError,
+    onFallbackActivated: handleFallbackActivated,
+  });
+
+  const { load: loadAudio } = audio;
+
+  /* ============================================================
+   * Muat teks ke pemutar
+   * ============================================================ */
+
+  useEffect(() => {
+    if (documentText.length === 0) return;
+    loadAudio(documentText);
+  }, [documentText, loadAudio]);
+
+  /* ============================================================
+   * Ambil daftar suara sekali saat halaman dibuka
+   * ============================================================ */
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchVoices() {
+      try {
+        const response = await fetch('/api/voices');
+        if (!response.ok) throw new Error(`status ${response.status}`);
+
+        const data = (await response.json()) as {
+          voices: VoiceOption[];
+          fallbackRecommended?: boolean;
+        };
+
+        if (cancelled) return;
+
+        setVoices(data.voices ?? []);
+        setVoicesUnavailable((data.voices?.length ?? 0) === 0);
+      } catch {
+        if (cancelled) return;
+        /*
+         * Kegagalan di sini TIDAK menghalangi pengguna. Daftar suara
+         * hanyalah pelengkap; audio tetap dapat diputar dengan suara
+         * bawaan. Jadi kita menandainya dan melanjutkan, bukan
+         * menampilkan galat yang membuat panik.
+         */
+        setVoicesUnavailable(true);
+      }
+    }
+
+    void fetchVoices();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /* ============================================================
+   * Fokus hasil
+   * ============================================================ */
+
+  useEffect(() => {
+    if (stage === 'ready' && resultHeadingRef.current) {
+      /*
+       * Pindahkan fokus ke judul hasil supaya pengguna screen reader
+       * langsung berada di awal konten baru, bukan tertinggal di tombol
+       * unggah yang sudah tidak relevan.
+       *
+       * tabIndex={-1} pada elemen tujuan membuatnya dapat difokus secara
+       * program tanpa masuk ke urutan Tab. Ini pola yang benar untuk
+       * pemindahan fokus; memakai autoFocus justru merampas kendali
+       * pengguna, terutama ketika halaman dimuat ulang.
+       */
+      resultHeadingRef.current.focus();
+    }
+  }, [stage]);
+
+  /* ============================================================
+   * Pengumuman progres
+   * ============================================================ */
+
+  const announceProgress = useCallback(
+    (percent: number, kind: 'unggah' | 'ekstraksi') => {
+      const rounded = Math.floor(percent);
+      if (rounded - lastAnnouncedPercent.current < PROGRESS_STEP_PERCENT) return;
+      lastAnnouncedPercent.current = rounded;
+
+      announce(
+        kind === 'unggah'
+          ? `Sedang mengunggah berkas, ${rounded} persen.`
+          : `Sedang mengekstrak teks, ${rounded} persen.`,
+        { key: kind },
+      );
+    },
+    [announce],
+  );
+
+  /* ============================================================
+   * Alur utama: unggah lalu ekstrak
+   * ============================================================ */
+
+  const handleFileSelected = useCallback(
+    async (file: File) => {
+      /*
+       * Kunci untuk mencegah dua proses berjalan bersamaan. Tanpa ini,
+       * pengguna yang menekan tombol cepat dua kali akan mengirim dua
+       * unggahan, memakan kuota, dan membuat pengumuman tumpang tindih.
+       */
+      if (busyRef.current) return;
+      busyRef.current = true;
+
+      clear();
+      setErrorMessage(null);
+      setWarnings([]);
+      setDocumentText('');
+      setDocumentName(humanizeFileName(file.name));
+      setWordCount(0);
+      lastAnnouncedPercent.current = 0;
+
+      try {
+        /* ---------- Tahap 1: unggah ---------- */
+        setStage('uploading');
+        setUploadPercent(0);
+
+        announce(
+          `Mulai mengunggah berkas ${humanizeFileName(file.name)}, ` +
+            `berukuran ${formatMegabytes(file.size)}.`,
+          { key: 'status' },
+        );
+
+        const supabase = getBrowserSupabase();
+        const path = buildStoragePath({ scope: 'anonim', fileName: file.name });
+
+        const uploadResult = await uploadWithProgress(supabase, path, file, (percent) => {
+          setUploadPercent(percent);
+          announceProgress(percent, 'unggah');
+        });
+
+        if (!uploadResult.ok) {
+          throw new Error(uploadResult.message);
+        }
+
+        /* ---------- Tahap 2: catat dokumen (opsional) ---------- */
+        let documentId: string | null = null;
+
+        const insertResult = await supabase
+          .from('documents')
+          .insert({
+            user_id: null, // MVP tanpa Auth
+            file_path: path,
+            file_name: humanizeFileName(file.name),
+            mime_type: file.type || 'application/octet-stream',
+            size_bytes: file.size,
+            status: 'uploaded',
+          })
+          .select('id')
+          .maybeSingle<{ id: string }>();
+
+        if (!insertResult.error && insertResult.data) {
+          documentId = insertResult.data.id;
+        }
+        // Bila tabel belum dibuat, kita lanjut memakai filePath langsung.
+        // Ini disengaja agar aplikasi tetap berfungsi pada tahap MVP.
+
+        announce(
+          'Berkas berhasil diunggah. Sekarang sistem mulai memproses teks.',
+          { key: 'status' },
+        );
+
+        /* ---------- Tahap 3: ekstraksi teks ---------- */
+        setStage('extracting');
+        setUploadPercent(null);
+
+        /*
+         * Progres sintetis. Sebagian permintaan tidak melaporkan progres
+         * bertahap, jadi kita tampilkan kemajuan yang berhenti di 90
+         * persen sampai jawaban server tiba. Ini lebih jujur daripada
+         * batang yang melompat tiba-tiba dari 0 ke 100.
+         */
+        let synthetic = 0;
+        const ticker = setInterval(() => {
+          synthetic = Math.min(90, synthetic + 3);
+          setUploadPercent(synthetic);
+          announceProgress(synthetic, 'ekstraksi');
+        }, 700);
+
+        let payload: ProcessDocumentResponse;
+        try {
+          payload = await requestExtraction(documentId, path);
+        } finally {
+          clearInterval(ticker);
+          setUploadPercent(null);
+        }
+
+        /* ---------- Tahap 4: tampilkan hasil ---------- */
+        setDocumentText(payload.text);
+        setWordCount(payload.wordCount);
+        setWarnings(payload.warnings);
+        setStage('ready');
+
+        announce(
+          `Proses selesai. Teks siap dibacakan, berisi ${payload.wordCount} kata, ` +
+            `perkiraan waktu baca ${formatDuration(
+              payload.text.length > 0
+                ? (payload.text.length / 14) * 1000 * 1.25
+                : 0,
+            )}. ` +
+            `Pemutar suara siap digunakan.` +
+            (payload.warnings.length > 0
+              ? ` Terdapat ${payload.warnings.length} catatan penting.`
+              : ''),
+          { key: 'status' },
+        );
+      } catch (err) {
+        const message = toFriendlyMessage(err);
+        setStage('error');
+        setErrorMessage(message);
+        setUploadPercent(null);
+        announce(message, { priority: 'assertive', key: 'error' });
+        // Kembalikan fokus ke input berkas agar pengguna dapat langsung
+        // mencoba lagi tanpa menavigasi ulang dari awal.
+        setFocusInputSignal((value) => value + 1);
+      } finally {
+        busyRef.current = false;
+      }
+    },
+    [announce, announceProgress, clear],
+  );
+
+  /* ============================================================
+   * Nilai turunan
+   * ============================================================ */
+
+  const totalEstimatedMs = useMemo(
+    () => audio.totalMs,
+    [audio.totalMs],
+  );
+
+  /* ============================================================
+   * Render
+   * ============================================================ */
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <>
+      {/* Dua region live, satu-satunya jalur pengumuman. */}
+      <LiveStatus
+        politeMessage={politeMessage}
+        assertiveMessage={assertiveMessage}
+      />
+
+      {/* ================= Langkah 1: unggah ================= */}
+      <UploadModule
+        onFileSelected={(file) => {
+          void handleFileSelected(file);
+        }}
+        busy={busy}
+        uploadPercent={stage === 'uploading' ? uploadPercent : null}
+        errorMessage={stage === 'error' ? errorMessage : null}
+        focusInputSignal={focusInputSignal}
+      />
+
+      {/* ================= Status visual ================= */}
+      {/*
+        Banner visual diberi aria-hidden karena isinya sudah diumumkan
+        lewat region live. Tanpa ini, screen reader akan membacakan
+        pesan yang sama dua kali.
+
+        Pemintal disertakan untuk pengguna yang melihat, TETAPI selalu
+        didampingi teks. Indikator yang hanya bergerak tanpa teks tidak
+        berarti apa pun bagi pengguna screen reader.
+      */}
+      {busy && (
+        <div aria-hidden="true" className="space-y-3">
+          <StatusBanner tone="info">
+            {stage === 'uploading'
+              ? 'Sedang mengunggah berkas Anda.'
+              : 'Kecerdasan buatan sedang mengekstrak teks dari dokumen.'}
+          </StatusBanner>
+          <Spinner />
+        </div>
+      )}
+
+      {stage === 'extracting' && uploadPercent !== null && (
+        <ProgressBar percent={uploadPercent} label="Progres ekstraksi teks" />
+      )}
+
+      {stage === 'ready' && (
+        <StatusBanner tone="success">
+          Teks berhasil diekstrak dan siap dibacakan.
+        </StatusBanner>
+      )}
+
+      {/* ================= Peringatan dari server ================= */}
+      {warnings.length > 0 && (
+        <section
+          aria-labelledby="peringatan-heading"
+          className="rounded-md border-2 border-warning bg-warning/5 p-4"
+        >
+          <h2 id="peringatan-heading" className="text-lg font-bold text-warning-dark">
+            Catatan penting tentang dokumen ini
+          </h2>
+          <ul className="mt-2 list-disc space-y-2 pl-6 text-base text-warning-dark">
+            {warnings.map((warning, index) => (
+              <li key={index}>{warning}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* ================= Langkah 2: pemutar ================= */}
+      <AudioPlayer
+        state={audio.state}
+        isReady={audio.isReady}
+        usingFallback={audio.usingFallback}
+        currentIndex={audio.currentIndex}
+        totalSentences={audio.totalSentences}
+        currentSentence={audio.currentSentence}
+        progressPercent={audio.progressPercent}
+        bufferedPercent={audio.bufferedPercent}
+        totalMs={totalEstimatedMs}
+        voices={voices}
+        voicesUnavailable={voicesUnavailable}
+        voice={audio.voice}
+        rate={audio.rate}
+        onSetVoice={audio.setVoice}
+        onSetRate={audio.setRate}
+        onPlay={audio.play}
+        onPause={audio.pause}
+        onResume={audio.resume}
+        onStop={audio.stop}
+        onSkipNext={audio.skipNext}
+        onSkipPrevious={audio.skipPrevious}
+        onGoToSentence={audio.goToSentence}
+      />
+
+      {/* ================= Langkah 3: teks ================= */}
+      <section aria-labelledby="hasil-heading" className="space-y-4">
+        {/*
+          tabIndex={-1} agar judul ini dapat menerima fokus program
+          (lihat useEffect di atas), tanpa ikut masuk ke urutan Tab.
+        */}
+        <h2
+          id="hasil-heading"
+          ref={resultHeadingRef}
+          tabIndex={-1}
+          className="text-2xl font-bold text-foreground focus-visible:outline-none"
+        >
+          {documentText ? 'Teks hasil ekstraksi' : 'Teks hasil ekstraksi (kosong)'}
+        </h2>
+
+        {documentName && (
+          <p className="text-base text-muted">
+            Berkas: <span className="font-semibold text-foreground">{documentName}</span>
+            {wordCount > 0 && <> — {wordCount} kata</>}
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+        )}
+
+        {documentText ? (
+          <article
+            lang="id"
+            aria-label={`Isi teks dokumen ${documentName}`}
+            className="max-w-reading rounded-md border border-border bg-surface p-5 text-lg leading-relaxed whitespace-pre-wrap text-foreground"
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+            {/*
+              Teks dirender sebagai simpul teks React, bukan
+              dangerouslySetInnerHTML, sehingga tidak ada risiko injeksi.
+            */}
+            {documentText}
+          </article>
+        ) : (
+          <p className="max-w-reading text-base text-muted">
+            Belum ada teks. Silakan unggah modul pelajaran pada bagian di
+            atas halaman ini.
+          </p>
+        )}
+      </section>
+    </>
+  );
+}
+
+/* ============================================================
+ * Unggah dengan progres
+ * ============================================================ */
+
+interface UploadOutcome {
+  ok: boolean;
+  message: string;
+}
+
+/**
+ * Unggah berkas ke Supabase Storage.
+ *
+ * Supabase JS tidak menyediakan callback progres yang seragam di semua
+ * versi, jadi kita melaporkan 0 dan 100 persen. Bar progres tetap
+ * bermakna karena tahap ekstraksi setelahnya punya progres sintetis.
+ */
+async function uploadWithProgress(
+  supabase: ReturnType<typeof getBrowserSupabase>,
+  path: string,
+  file: File,
+  onProgress: (percent: number) => void,
+): Promise<UploadOutcome> {
+  onProgress(0);
+
+  const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(path, file, {
+    cacheControl: '3600',
+    upsert: false,
+    contentType: file.type || undefined,
+  });
+
+  if (error) {
+    return { ok: false, message: translateStorageError(error.message) };
+  }
+
+  onProgress(100);
+  return { ok: true, message: '' };
+}
+
+/**
+ * Ubah pesan galat Supabase menjadi kalimat yang dapat dibacakan.
+ *
+ * Galat mentah seperti "The resource already exists" tidak bermakna bagi
+ * siswa. Setiap kasus dipetakan ke kalimat yang menjelaskan penyebab DAN
+ * langkah berikutnya.
+ */
+function translateStorageError(raw: string): string {
+  const message = raw.toLowerCase();
+
+  if (message.includes('bucket not found')) {
+    return (
+      `Tempat penyimpanan berkas "${STORAGE_BUCKET}" belum dibuat. ` +
+      `Hubungi pengelola aplikasi untuk menjalankan berkas supabase/schema.sql.`
+    );
+  }
+  if (message.includes('already exists') || message.includes('duplicate')) {
+    return 'Berkas dengan nama ini sudah ada. Silakan ganti nama berkas atau unggah ulang.';
+  }
+  if (message.includes('exceeded the maximum allowed size')) {
+    return 'Berkas melebihi batas ukuran yang diizinkan. Silakan pilih berkas yang lebih kecil.';
+  }
+  if (message.includes('row level security') || message.includes('policy')) {
+    return (
+      'Akses penyimpanan ditolak oleh kebijakan keamanan. ' +
+      'Hubungi pengelola aplikasi untuk memeriksa kebijakan pada bucket penyimpanan.'
+    );
+  }
+  if (message.includes('failed to fetch') || message.includes('network')) {
+    return 'Koneksi ke server terputus. Periksa sambungan internet Anda lalu coba lagi.';
+  }
+
+  return `Berkas gagal diunggah. Pesan dari server: ${raw}`;
+}
+
+/* ============================================================
+ * Panggilan API ekstraksi
+ * ============================================================ */
+
+async function requestExtraction(
+  documentId: string | null,
+  filePath: string,
+): Promise<ProcessDocumentResponse> {
+  const response = await fetch('/api/process-document', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(documentId ? { documentId } : { filePath }),
+  });
+
+  if (!response.ok) {
+    /*
+     * Server selalu mengembalikan bentuk ApiErrorBody. Bila tidak
+     * (misalnya halaman HTML dari proxy yang salah), kita menanganinya
+     * tanpa membocorkan HTML ke pengguna.
+     */
+    let body: ApiErrorBody | null = null;
+    try {
+      body = (await response.json()) as ApiErrorBody;
+    } catch {
+      body = null;
+    }
+
+    const message =
+      body?.error.message ??
+      `Permintaan gagal dengan status ${response.status}. Silakan coba lagi.`;
+    throw new Error(message);
+  }
+
+  return (await response.json()) as ProcessDocumentResponse;
+}
+
+/* ============================================================
+ * Utilitas pesan
+ * ============================================================ */
+
+/**
+ * Pastikan pengguna SELALU menerima kalimat yang utuh dan dapat
+ * ditindaklanjuti. Pesan JavaScript bawaan seperti "Failed to fetch"
+ * tidak memenuhi syarat itu.
+ */
+function toFriendlyMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const message = err.message;
+
+    if (/failed to fetch|networkerror|load failed/i.test(message)) {
+      return 'Tidak dapat menghubungi server. Periksa sambungan internet Anda, lalu coba lagi.';
+    }
+    if (/aborted|timeout/i.test(message)) {
+      return 'Proses memakan waktu terlalu lama dan dihentikan. Silakan coba lagi dengan dokumen yang lebih pendek.';
+    }
+    // Pesan dari AppError sudah dalam bentuk final yang ramah.
+    if (message.length > 0) return message;
+  }
+
+  return 'Terjadi kesalahan yang tidak terduga. Silakan coba lagi.';
+}
+
+/* ============================================================
+ * Pemintal
+ * ============================================================ */
+
+function Spinner() {
+  return (
+    <div
+      /*
+       * aria-hidden karena elemen ini murni dekoratif. Informasi yang
+       * dibawakannya sudah disampaikan lewat StatusBanner dan region live.
+       */
+      aria-hidden="true"
+      className="h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-subtle"
+    >
+      <div className="h-full w-1/3 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
     </div>
   );
 }

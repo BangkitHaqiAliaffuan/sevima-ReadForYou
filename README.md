@@ -293,20 +293,11 @@ Saat mengunggah berkas, Anda harus mendengar pengumuman berurutan:
 
 ## Keputusan yang memerlukan perhatian Anda
 
-### 1. Aplikasi berjalan tanpa autentikasi
+### 1. Ekstraksi dokumen panjang
 
-Tahap MVP ini belum memakai Supabase Auth. Artinya:
-
-- Siapa pun yang memiliki anon key dapat mengunggah berkas.
-- Server tidak dapat memverifikasi bahwa dokumen yang diminta milik pengguna
-  yang memintanya (risiko IDOR).
-
-Pertahanan yang sudah terpasang: pembatas laju terpisah per jalur (20 per
-menit untuk ekstraksi, 120 per menit untuk suara), batas ukuran 20 MB, dan
-validasi jenis berkas dari magic bytes.
-
-**Jangan menjalankan mode ini di produksi tanpa lebih dulu mengaktifkan
-autentikasi.**
+Model Flash memiliki batas keluaran sekitar 65.000 token. Bila dokumen
+melebihi batas itu, bagian akhir akan hilang. Aplikasi ini **mendeteksi dan
+mengumumkan** kondisi tersebut, serta menyarankan pemisahan berkas per bab.
 
 ### 2. Layanan suara pihak ketiga
 
@@ -314,13 +305,7 @@ autentikasi.**
 resmi** dan dapat berubah tanpa pemberitahuan. Jaring pengaman ke
 `speechSynthesis` sudah terpasang, tetapi kualitas suaranya akan berbeda.
 
-### 3. Ekstraksi dokumen panjang
-
-Model Flash memiliki batas keluaran sekitar 65.000 token. Bila dokumen
-melebihi batas itu, bagian akhir akan hilang. Aplikasi ini **mendeteksi dan
-mengumumkan** kondisi tersebut, serta menyarankan pemisahan berkas per bab.
-
-### 4. Pembatas laju disimpan di memori
+### 3. Pembatas laju disimpan di memori
 
 Pada penerapan serverless (mis. Vercel), setiap instansi memiliki penghitung
 sendiri, sehingga batas efektif berlipat. Cukup untuk MVP, tidak cukup untuk
@@ -329,39 +314,37 @@ sudah dibuat kecil agar penggantian hanya menyentuh satu berkas.
 
 ---
 
-## Autentikasi (anonim + email, tamu tetap boleh)
+## Autentikasi (email saja — tanpa tamu anonim)
 
-Aplikasi memakai tiga mode dalam satu alur:
+Ada dua keadaan saja: **belum masuk** atau **sudah masuk** dengan akun
+email. Konsep "tamu anonim" (`signInAnonymously`, label "Tamu", berkas di
+folder `anonim/` milik uid anonim) **sudah dihapus** dan tidak dipakai lagi.
 
-1. **Tamu tanpa masuk** — langsung unggah; riwayat tidak tersimpan.
-2. **Tamu anonim** — satu ketukan "Masuk sebagai tamu"
-   (`signInAnonymously`, tanpa formulir agar ramah screen reader);
-   berkas terikat uid anonim dan memiliki riwayat.
-3. **Akun permanen** — upgrade dari tamu via `updateUser({ email,
-   password })` sehingga uid dan riwayat tetap sama; perangkat lain
-   memakai "Masuk dengan email" (`signInWithPassword`).
+1. **Belum masuk** — tetap boleh mengunggah dan mendengar; riwayat bacaan
+   tidak tersimpan (unggahan masuk ke folder `anonim/`, `user_id` NULL).
+2. **Akun email** — daftar/masuk lewat `signInWithPassword` +
+   `signUp`; riwayat bacaan tersimpan dan dapat dibuka di perangkat lain.
 
 Seluruh alur masuk tinggal di halaman khusus **`/masuk`**
-(`app/masuk/page.tsx`; mendukung `?redirect=` kembali setelah masuk
-permanen — hanya path internal `/...`, anti open-redirect). Beranda
-sengaja bersih dari UI auth; satu-satunya pintu dari beranda adalah
-tautan di pesan riwayat tamu.
+(`app/masuk/page.tsx`; mendukung `?redirect=` kembali setelah masuk — hanya
+path internal `/...`, anti open-redirect). Beranda sengaja bersih dari UI
+auth; pintu dari beranda adalah tautan di pesan riwayat.
 
 Prasyarat dasbor Supabase (sekali saja):
 
-1. **Authentication → Providers** → aktifkan **Anonymous Sign-Ins**
-   dan **Email**.
-2. **SQL Editor** → jalankan `supabase/schema.sql` (bila belum),
-   lalu `supabase/migration_auth_anon.sql`. Migrasi ini mempersempit
+1. **Authentication → Providers** → aktifkan **Email** saja. "Anonymous
+   Sign-Ins" **tidak lagi diperlukan**.
+2. **SQL Editor** → jalankan `supabase/schema.sql` (bila belum), lalu
+   `supabase/migration_simple_auth.sql`. Migrasi ini mempersempit
    `mvp_anon_select` ke baris tanpa pemilik (`user_id IS NULL`) dan
-   mengunci unggahan anon ke folder `anonim/` — tanpa ini, tamu tanpa
-   sesi dapat membaca dokumen milik akun lain.
+   mengunci unggahan anonim ke folder `anonim/`.
+   **Jangan** menjalankan `migration_auth_anon.sql` (usang).
 
 Penegakan di kode: `middleware.ts` menyegarkan sesi cookie,
 `app/api/process-document/route.ts` memverifikasi `user_id` pemilik
 (milik akun lain ditolak sebagai "tidak ditemukan") dan memvalidasi
 prefix folder path fallback. Rate limit per akun (`user:<id>`) untuk
-yang masuk, per IP untuk tamu.
+yang masuk, per IP untuk yang belum masuk.
 
 ---
 

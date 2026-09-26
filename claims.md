@@ -62,9 +62,19 @@
 | `supabase/migration_auth_anon.sql` | done | 2026-09-26-simple-auth | 2026-09-26 | Diberi header USANG → arahkan ke migration_simple_auth.sql |
 | `middleware.ts` | done | 2026-09-26-simple-auth | 2026-09-26 | Komentar: rujukan signInAnonymously dihapus |
 | `AGENTS.md` | done | 2026-09-26-simple-auth | 2026-09-26 | Bagian "Auth model" ditulis ulang: email only, tanpa tamu |
+| `app/page.tsx` | done | 2026-09-26-ux-polish | 2026-09-26 | Highlight kalimat → putih di bg-accent (WCAG AA); hapus progress bar ekstraksi; GUARD duplikat (findExistingDocument); insert gagal = galat jujur; retry ekstraksi via filePath saat NO_FILE |
+| `components/DocumentHistory.tsx` | done | 2026-09-26-ux-polish | 2026-09-26 | Tombol Hapus per entri + konfirmasi dua-langkah; hapus berkas Storage (best-effort) + baris DB |
+| `app/api/process-document/route.ts` | done | 2026-09-26-ux-polish | 2026-09-26 | Dokumentasi akar galat "berkas tidak ditemukan" (sesi server null vs path uid) |
+| `README.md` | done | 2026-09-26-ux-polish | 2026-09-26 | Sinkronkan bagian Autentikasi ke model email-only |
+| `.gitignore` | done | 2026-09-26-ux-polish | 2026-09-26 | Abaikan /rules.pdf |
+| `components/UploadModule.tsx` | blocked | 2026-09-26-a11y-audit | 2026-09-26 | A1 TERTUNDA: klaim aktif milik `2026-09-26-ux-accessible-flow` (app/page.tsx sedang diedit 14:26) → TIDAK menyentuh. Fix siap: hapus `disabled={busy}` di :198 |
+| `components/AudioPlayer.tsx` | blocked | 2026-09-26-a11y-audit | 2026-09-26 | A3 TERTUNDA: klaim aktif milik `2026-09-26-ux-accessible-flow` → TIDAK menyentuh. Fix siap: hapus `keyShortcut="Alt+P"` ganda di :198 |
+| `README.md` | done | 2026-09-26-a11y-audit | 2026-09-26 | D1 SELESAI: §Keputusan#1 (klaim "tanpa auth"/IDOR) dihapus & dinomori ulang; §Autentikasi ditulis ulang email-only (tamu anonim/signInAnonymously/migration_auth_anon dihapus). grep 0 sisa; tsc 0, lint 0, build hijau (8 rute) |
 | `docs/panduan-tunanetra.md` | done | 2026-09-26-a11y-docs | 2026-09-26 | 11 bagian, 3917 kata. Semua 22 klaim pintasan/struktur diverifikasi ke kode dgn skrip (0 gagal). 2 temuan asli dicatat: tak ada `<nav>` (landmark navigation hilang) & isi dokumen belum berheading. `docs/` tak boleh diklaim per AGENTS.md — baris ini utk jejak |
 | `docs/modul-uji-fotosintesis.txt` | done | 2026-09-26-a11y-docs | 2026-09-26 | 710 kata, 7 kode penanda (Alfa Satu→Golf Tujuh) + 5 soal jebakan anti-halusinasi |
 | `docs/modul-uji-fotosintesis.pdf` | done | 2026-09-26-a11y-docs | 2026-09-26 | 2 halaman A4 via soffice; **terbukti** dirender jadi 2 PNG & seluruh kode penanda Alfa Satu→Foxtrot Enam terbaca 9router (1.6-5.2 s/halaman) |
 | `docs/modul-uji-berhitung.txt` | done | 2026-09-26-a11y-docs | 2026-09-26 | 432 kata, 6 kode penanda; penuh simbol/rumus/tabel utk uji pengubahan simbol→kalimat |
+| `docs/prompt-gamma-slide-deck.pdf` | done | 2026-09-26-a11y-docs | 2026-09-26 | **PDF 10 hal, Tagged: yes, terverifikasi ekstraksi**: 1946/1987 kata terekstrak, **15/15 fakta kritis selamat**, 10 slide terdeteksi, 0 kata terpotong. Dibuat via Chrome headless + HTML (`.html` sumber, bukan utk submit). Perbaikan penting: `<code>` tanpa padding supaya `[ISI: …]` tidak dapat spasi palsu saat dibaca Gamma |
+| `docs/prompt-gamma-slide-deck.txt` | done | 2026-09-26-a11y-docs | 2026-09-26 | Versi teks bersih tanpa pembungkus (14.301 B) — jalur paling aman utk copy-paste ke Gamma |
 
 Status yang sah: `claimed` (sedang dikerjakan) atau `done` (selesai + terverifikasi).

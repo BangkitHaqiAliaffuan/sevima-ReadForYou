@@ -46,6 +46,8 @@ import {
 export interface UploadModuleProps {
   /** Dipanggil setelah berkas lolos validasi klien. */
   onFileSelected: (file: File) => void;
+  /** Dipanggil saat pengguna memilih modul contoh bawaan. */
+  onSelectSample?: () => void;
   /** True saat unggah/ekstraksi berjalan. */
   busy?: boolean;
   /** Progres unggah 0-100. Null bila belum mulai. */
@@ -58,6 +60,7 @@ export interface UploadModuleProps {
 
 export function UploadModule({
   onFileSelected,
+  onSelectSample,
   busy = false,
   uploadPercent = null,
   errorMessage = null,
@@ -153,30 +156,63 @@ export function UploadModule({
         onDragLeave={onDragLeave}
         onDrop={onDrop}
         className={[
-          'rounded-md border-2 border-dashed p-6 text-center transition-colors motion-reduce:transition-none',
-          isDragging ? 'border-accent bg-accent/5' : 'border-border bg-surface',
+          'rounded-xl border-2 border-dashed p-8 text-center transition-colors motion-reduce:transition-none',
+          isDragging ? 'border-accent bg-accent/5' : 'border-border bg-surface shadow-xs',
         ].join(' ')}
       >
-        {/*
-          Label utama. Mengarah ke input melalui htmlFor sehingga
-          menekan atau menekan Enter pada label akan membuka pemilih
-          berkas. Ukuran minimal 44x44 piksel memenuhi WCAG 2.5.8.
-        */}
-        <label
-          htmlFor={inputId}
-          className={[
-            'inline-flex min-h-11 cursor-pointer items-center justify-center',
-            'gap-2 rounded-md bg-accent px-6 py-3 text-base font-semibold text-white',
-            'hover:bg-accent-dark',
-            busy ? 'cursor-not-allowed opacity-60' : '',
-          ].join(' ')}
-        >
-          <UploadIcon />
-          <span>Pilih berkas modul</span>
-        </label>
+        <div className="mb-4 flex flex-wrap items-center justify-center gap-2">
+          <span className="rounded-md border border-border/50 bg-subtle px-2.5 py-1 text-xs font-semibold text-foreground">
+            PDF
+          </span>
+          <span className="rounded-md border border-border/50 bg-subtle px-2.5 py-1 text-xs font-semibold text-foreground">
+            PNG / JPG / WEBP
+          </span>
+          <span className="rounded-md border border-border/50 bg-subtle px-2.5 py-1 text-xs font-medium text-muted">
+            Maks. {formatMegabytes(MAX_FILE_BYTES)}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          {/*
+            Label utama. Mengarah ke input melalui htmlFor sehingga
+            menekan atau menekan Enter pada label akan membuka pemilih
+            berkas. Ukuran minimal 44x44 piksel memenuhi WCAG 2.5.8.
+          */}
+          <label
+            htmlFor={inputId}
+            className={[
+              'inline-flex min-h-11 cursor-pointer items-center justify-center',
+              'gap-2 rounded-md bg-accent px-6 py-3 text-base font-semibold text-white shadow-xs',
+              'hover:bg-accent-dark focus-within:ring-4 focus-within:ring-accent focus-within:ring-offset-2',
+              busy ? 'cursor-not-allowed opacity-60' : '',
+            ].join(' ')}
+          >
+            <UploadIcon />
+            <span>Pilih berkas modul</span>
+          </label>
+
+          {onSelectSample && (
+            <button
+              type="button"
+              onClick={onSelectSample}
+              disabled={busy}
+              aria-disabled={busy}
+              aria-label="Coba modul contoh Tata Surya langsung tanpa mengunggah berkas"
+              className={[
+                'inline-flex min-h-11 cursor-pointer items-center justify-center',
+                'gap-2 rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark',
+                'hover:bg-accent/5 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-accent focus-visible:ring-offset-2',
+                busy ? 'cursor-not-allowed opacity-60' : '',
+              ].join(' ')}
+            >
+              <BookIcon />
+              <span>Coba Modul Contoh</span>
+            </button>
+          )}
+        </div>
 
         <p aria-hidden="true" className="mt-3 text-sm text-muted">
-          atau seret dan lepaskan berkas ke area ini
+          atau seret dan lepaskan berkas Anda ke area ini
         </p>
 
         {/*
@@ -295,6 +331,27 @@ function UploadIcon() {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <polyline points="17 8 12 3 7 8" />
       <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
+  );
+}
+
+function BookIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width="20"
+      height="20"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" />
+      <path d="M6 6h10" />
+      <path d="M6 10h10" />
     </svg>
   );
 }

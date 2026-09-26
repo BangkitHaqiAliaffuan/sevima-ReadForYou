@@ -25,7 +25,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { AudioPlayer } from '@/components/AudioPlayer';
-import { AuthPanel } from '@/components/AuthPanel';
 import { VoiceQA } from '@/components/VoiceQA';
 import { DocumentHistory } from '@/components/DocumentHistory';
 import { LiveStatus, StatusBanner } from '@/components/LiveStatus';
@@ -33,7 +32,8 @@ import { ProgressBar, UploadModule } from '@/components/UploadModule';
 import { useAnnouncer } from '@/hooks/useAnnouncer';
 import { useServerAudio } from '@/hooks/useServerAudio';
 import { useSession } from '@/hooks/useSession';
-import { formatDuration } from '@/lib/chunk-text';
+import { formatDuration, splitIntoSentences } from '@/lib/chunk-text';
+import { SAMPLE_DOCUMENT } from '@/lib/sample-document';
 import {
   buildStoragePath,
   getBrowserSupabase,
@@ -54,7 +54,7 @@ const PROGRESS_STEP_PERCENT = 10;
 
 export default function HomePage() {
   const { politeMessage, assertiveMessage, announce, clear } = useAnnouncer();
-  const { user, isAnonymous, loading: sessionLoading } = useSession();
+  const { user } = useSession();
 
   /* Id stabil untuk deps memo + scope storage (hindari optional-chain di deps). */
   const sessionUserId = user?.id ?? null;
@@ -87,6 +87,8 @@ export default function HomePage() {
   const [replaySignal, setReplaySignal] = useState(0);
 
   const resultHeadingRef = useRef<HTMLHeadingElement>(null);
+  const playButtonRef = useRef<HTMLButtonElement | null>(null);
+  const activeSentenceRef = useRef<HTMLSpanElement | null>(null);
   const lastAnnouncedPercent = useRef(0);
   /** Mencegah pemrosesan ganda ketika pengguna menekan tombol dua kali. */
   const busyRef = useRef(false);
@@ -136,12 +138,16 @@ export default function HomePage() {
     (info: { usingFallback: boolean }) => {
       announce(
         info.usingFallback
-          ? 'Audio siap dengan suara bawaan peramban. Tekan Putar untuk mulai mendengarkan.'
-          : 'Audio siap. Tekan Putar untuk mulai mendengarkan.',
+          ? 'Audio siap dengan suara bawaan peramban. Tekan Putar atau Alt+P untuk mulai mendengarkan.'
+          : 'Audio siap. Tekan Putar atau Alt+P untuk mulai mendengarkan.',
         {
           key: 'audio-ready',
         },
       );
+      // Pindahkan fokus langsung ke tombol Putar agar siswa tidak perlu mencari kontrol
+      if (playButtonRef.current) {
+        playButtonRef.current.focus();
+      }
     },
     [announce],
   );
@@ -471,8 +477,43 @@ export default function HomePage() {
     [announce, clear],
   );
 
+  /**
+   * Muat modul contoh pra-ekstraksi langsung tanpa unggah berkas.
+   */
+  const handleSelectSample = useCallback(() => {
+    if (busyRef.current) return;
+    clear();
+    setErrorMessage(null);
+    setWarnings([]);
+    setDocumentText(SAMPLE_DOCUMENT.text);
+    setDocumentName(SAMPLE_DOCUMENT.name);
+    setWordCount(SAMPLE_DOCUMENT.wordCount);
+    setDocumentId(null);
+    setStage('ready');
+    setReplaySignal((v) => v + 1);
+    announce(
+      `Modul contoh Tata Surya dimuat, berisi ${SAMPLE_DOCUMENT.wordCount} kata. Menyiapkan audio.`,
+      { key: 'status' },
+    );
+  }, [announce, clear]);
+
+  /**
+   * Reset kembali ke menu pemilihan / pengunggahan modul.
+   */
+  const handleResetToUpload = useCallback(() => {
+    audio.stop();
+    setStage('idle');
+    setDocumentText('');
+    setDocumentName('');
+    setDocumentId(null);
+    setWarnings([]);
+    setStalledInfo(null);
+    setFocusInputSignal((v) => v + 1);
+    announce('Kembali ke menu pemilihan modul pelajaran.', { key: 'status' });
+  }, [audio, announce]);
+
   /* ============================================================
-   * Nilai turunan
+   * Nilai turunan & sinkronisasi kalimat
    * ============================================================ */
 
   const totalEstimatedMs = useMemo(
@@ -480,9 +521,58 @@ export default function HomePage() {
     [audio.totalMs],
   );
 
+  const sentences = useMemo(() => {
+    if (!documentText) return [];
+    return splitIntoSentences(documentText);
+  }, [documentText]);
+
+  // Gulir otomatis mengikuti kalimat yang sedang dibacakan
+  useEffect(() => {
+    if (stage === 'ready' && activeSentenceRef.current) {
+      activeSentenceRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      });
+    }
+  }, [audio.currentIndex, stage]);
+
+  // Pintasan keyboard global aksesibel
+  useEffect(() => {
+    if (stage !== 'ready' || !documentText) return;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === 'p') {
+        event.preventDefault();
+        if (audio.state === 'speaking') {
+          audio.pause();
+        } else if (audio.state === 'paused') {
+          audio.resume();
+        } else if (audio.isAudioReady) {
+          audio.play();
+        }
+      } else if (key === 'k') {
+        event.preventDefault();
+        audio.skipNext();
+      } else if (key === 'j') {
+        event.preventDefault();
+        audio.skipPrevious();
+      } else if (key === 'r') {
+        event.preventDefault();
+        audio.goToSentence(audio.currentIndex);
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [stage, documentText, audio]);
+
   /* ============================================================
    * Render
    * ============================================================ */
+
+  const isReadingStage = stage === 'ready' && documentText.length > 0;
 
   return (
     <>
@@ -492,224 +582,255 @@ export default function HomePage() {
         assertiveMessage={assertiveMessage}
       />
 
-      {/* ================= Status masuk (tamu / akun) ================= */}
-      <AuthPanel
-        user={user}
-        isAnonymous={isAnonymous}
-        loading={sessionLoading}
-        announce={announce}
-      />
+      {/* ================= TAHAP 1: Unggah & Pemilihan Modul (saat belum ada dokumen aktif) ================= */}
+      {!isReadingStage && (
+        <div className="space-y-8">
+          <UploadModule
+            onFileSelected={(file) => {
+              void handleFileSelected(file);
+            }}
+            onSelectSample={handleSelectSample}
+            busy={busy}
+            uploadPercent={stage === 'uploading' ? uploadPercent : null}
+            errorMessage={stage === 'error' ? errorMessage : null}
+            focusInputSignal={focusInputSignal}
+          />
 
-      {/* ================= Langkah 1: unggah ================= */}
-      <UploadModule
-        onFileSelected={(file) => {
-          void handleFileSelected(file);
-        }}
-        busy={busy}
-        uploadPercent={stage === 'uploading' ? uploadPercent : null}
-        errorMessage={stage === 'error' ? errorMessage : null}
-        focusInputSignal={focusInputSignal}
-      />
+          {/* Status visual pemrosesan */}
+          {busy && (
+            <div aria-hidden="true" className="space-y-3">
+              <StatusBanner tone="info">
+                {stage === 'uploading'
+                  ? 'Sedang mengunggah berkas Anda ke sistem.'
+                  : 'Kecerdasan buatan sedang mengekstrak teks menjadi narasi mengalir.'}
+              </StatusBanner>
+              <Spinner />
+            </div>
+          )}
 
-      {/* ================= Status visual ================= */}
-      {/*
-        Banner visual diberi aria-hidden karena isinya sudah diumumkan
-        lewat region live. Tanpa ini, screen reader akan membacakan
-        pesan yang sama dua kali.
+          {stage === 'extracting' && uploadPercent !== null && (
+            <ProgressBar percent={uploadPercent} label="Progres ekstraksi teks" />
+          )}
 
-        Pemintal disertakan untuk pengguna yang melihat, TETAPI selalu
-        didampingi teks. Indikator yang hanya bergerak tanpa teks tidak
-        berarti apa pun bagi pengguna screen reader.
-      */}
-      {busy && (
-        <div aria-hidden="true" className="space-y-3">
-          <StatusBanner tone="info">
-            {stage === 'uploading'
-              ? 'Sedang mengunggah berkas Anda.'
-              : 'Kecerdasan buatan sedang mengekstrak teks dari dokumen.'}
-          </StatusBanner>
-          <Spinner />
+          {/* Riwayat bacaan */}
+          <DocumentHistory
+            userId={sessionUserId}
+            onReplay={handleReplaySelected}
+            announce={announce}
+          />
         </div>
       )}
 
-      {stage === 'extracting' && uploadPercent !== null && (
-        <ProgressBar percent={uploadPercent} label="Progres ekstraksi teks" />
-      )}
+      {/* ================= TAHAP 2: Ruang Baca & Dengar Terpadu (saat dokumen aktif) ================= */}
+      {isReadingStage && (
+        <div className="space-y-8">
+          {/* Header modul aktif + tombol ganti modul */}
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border/70 bg-surface p-5 shadow-xs">
+            <div className="space-y-1">
+              <p className="text-xs font-bold uppercase tracking-wider text-accent-dark">
+                Modul Sedang Dibaca
+              </p>
+              <h2 className="text-xl font-bold text-foreground sm:text-2xl">
+                {documentName}
+              </h2>
+              <p className="text-sm font-medium text-muted">
+                {wordCount > 0 && <span>{wordCount} kata</span>}
+                {wordCount > 0 && totalEstimatedMs > 0 && <span> • </span>}
+                {totalEstimatedMs > 0 && (
+                  <span>estimasi waktu dengar {formatDuration(totalEstimatedMs)}</span>
+                )}
+              </p>
+            </div>
 
-      {stage === 'ready' && (
-        <StatusBanner tone="success">
-          Teks berhasil diekstrak dan siap dibacakan.
-        </StatusBanner>
-      )}
-
-      {/* ================= Peringatan dari server ================= */}
-      {warnings.length > 0 && (
-        <section
-          aria-labelledby="peringatan-heading"
-          className="rounded-md border-2 border-warning bg-warning/5 p-4"
-        >
-          <h2 id="peringatan-heading" className="text-lg font-bold text-warning-dark">
-            Catatan penting tentang dokumen ini
-          </h2>
-          <ul className="mt-2 list-disc space-y-2 pl-6 text-base text-warning-dark">
-            {warnings.map((warning, index) => (
-              <li key={index}>{warning}</li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {/* ================= Pemulihan pembacaan terhenti ================= */}
-      {/*
-        Muncul hanya saat state 'stalled'. Fokus SENGAJA tidak dipindahkan
-        ke sini — pengguna diberitahu lewat role="alert" dan mencapai
-        tombol lewat Tab normal. Panel hilang otomatis begitu antrean baru
-        berjalan (state bukan lagi 'stalled').
-      */}
-      {audio.state === 'stalled' && stalledInfo && (
-        <section
-          aria-labelledby="terhenti-heading"
-          className="rounded-md border-2 border-danger bg-danger/5 p-4"
-        >
-          <h2 id="terhenti-heading" className="text-lg font-bold text-danger">
-            Pembacaan terhenti di kalimat {stalledInfo.index + 1} dari{' '}
-            {stalledInfo.total}
-          </h2>
-          <p className="mt-2 max-w-reading text-base text-danger">
-            Posisi Anda tersimpan — tidak perlu mengulang dari awal. Pilih
-            cara melanjutkan:
-          </p>
-          <div className="mt-3 flex flex-wrap gap-3">
             <button
               type="button"
-              onClick={() => audio.retryCurrent()}
-              className="inline-flex min-h-11 items-center justify-center rounded-md bg-accent px-6 py-3 text-base font-semibold text-white hover:bg-accent-dark"
+              onClick={handleResetToUpload}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border-2 border-border bg-surface px-5 py-2.5 text-base font-semibold text-foreground hover:bg-subtle focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-accent"
+              aria-label="Kembali ke pemilihan modul untuk mengunggah berkas lain"
             >
-              Ulangi kalimat ini
+              <span>Ganti Modul</span>
             </button>
-            <button
-              type="button"
-              onClick={() => audio.skipNext()}
-              className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
-            >
-              Lewati kalimat ini
-            </button>
-            {!audio.usingFallback ? (
-              <button
-                type="button"
-                onClick={() => audio.useFallbackVoice()}
-                className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
-              >
-                Pakai suara peramban
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => audio.retryMainService()}
-                className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
-              >
-                Coba layanan utama
-              </button>
-            )}
           </div>
-        </section>
+
+          <StatusBanner tone="success">
+            Teks berhasil diekstrak dan siap dibacakan. Gunakan pemutar di bawah atau tekan Alt+P untuk memutar.
+          </StatusBanner>
+
+          {/* Peringatan server bila ada bagian terpotong */}
+          {warnings.length > 0 && (
+            <section
+              aria-labelledby="peringatan-heading"
+              className="rounded-md border-2 border-warning bg-warning/5 p-4"
+            >
+              <h2 id="peringatan-heading" className="text-lg font-bold text-warning-dark">
+                Catatan penting tentang dokumen ini
+              </h2>
+              <ul className="mt-2 list-disc space-y-2 pl-6 text-base text-warning-dark">
+                {warnings.map((warning, index) => (
+                  <li key={index}>{warning}</li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* Pemulihan pembacaan terhenti */}
+          {audio.state === 'stalled' && stalledInfo && (
+            <section
+              aria-labelledby="terhenti-heading"
+              className="rounded-md border-2 border-danger bg-danger/5 p-4"
+            >
+              <h2 id="terhenti-heading" className="text-lg font-bold text-danger">
+                Pembacaan terhenti di kalimat {stalledInfo.index + 1} dari{' '}
+                {stalledInfo.total}
+              </h2>
+              <p className="mt-2 max-w-reading text-base text-danger">
+                Posisi Anda tersimpan — tidak perlu mengulang dari awal. Pilih
+                cara melanjutkan:
+              </p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => audio.retryCurrent()}
+                  className="inline-flex min-h-11 items-center justify-center rounded-md bg-accent px-6 py-3 text-base font-semibold text-white hover:bg-accent-dark"
+                >
+                  Ulangi kalimat ini
+                </button>
+                <button
+                  type="button"
+                  onClick={() => audio.skipNext()}
+                  className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
+                >
+                  Lewati kalimat ini
+                </button>
+                {!audio.usingFallback ? (
+                  <button
+                    type="button"
+                    onClick={() => audio.useFallbackVoice()}
+                    className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
+                  >
+                    Pakai suara peramban
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => audio.retryMainService()}
+                    className="inline-flex min-h-11 items-center justify-center rounded-md border-2 border-accent bg-surface px-6 py-3 text-base font-semibold text-accent-dark hover:bg-accent/5"
+                  >
+                    Coba layanan utama
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Pemutar suara utama */}
+          <AudioPlayer
+            playButtonRef={playButtonRef}
+            state={audio.state}
+            isReady={audio.isReady}
+            isAudioReady={audio.isAudioReady}
+            prefetchReady={audio.prefetchReady}
+            prefetchNeeded={audio.prefetchNeeded}
+            usingFallback={audio.usingFallback}
+            currentIndex={audio.currentIndex}
+            totalSentences={audio.totalSentences}
+            currentSentence={audio.currentSentence}
+            progressPercent={audio.progressPercent}
+            bufferedPercent={audio.bufferedPercent}
+            totalMs={totalEstimatedMs}
+            voices={voices}
+            voicesUnavailable={voicesUnavailable}
+            voice={audio.voice}
+            rate={audio.rate}
+            onSetVoice={audio.setVoice}
+            onSetRate={audio.setRate}
+            onPlay={audio.play}
+            onPause={audio.pause}
+            onResume={audio.resume}
+            onStop={audio.stop}
+            onSkipNext={audio.skipNext}
+            onSkipPrevious={audio.skipPrevious}
+            onGoToSentence={audio.goToSentence}
+            onUseFallbackVoice={useFallbackVoice}
+            onRetryMainService={handleRetryMainService}
+            onReloadAudio={handleReloadAudio}
+          />
+
+          {/* Tanya Dokumen (Voice/Text QA) */}
+          <VoiceQA
+            documentId={documentId}
+            docText={documentText}
+            docName={documentName || 'dokumen'}
+            voice={audio.voice}
+            rate={audio.rate}
+            voices={voices}
+            voicesUnavailable={voicesUnavailable}
+            announce={announce}
+            onPauseDocument={handlePauseDocument}
+          />
+
+          {/* Teks Bacaan dengan Penyorotan Kalimat Interaktif */}
+          <section aria-labelledby="hasil-heading" className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2
+                id="hasil-heading"
+                ref={resultHeadingRef}
+                tabIndex={-1}
+                className="text-2xl font-bold text-foreground focus-visible:outline-none"
+              >
+                Teks Bacaan Modul
+              </h2>
+              <span className="text-xs text-muted">
+                Klik atau tekan Enter pada kalimat mana pun untuk langsung mendengarkannya
+              </span>
+            </div>
+
+            <article
+              lang="id"
+              aria-label={`Isi teks dokumen ${documentName}`}
+              className="max-w-reading rounded-xl border border-border/80 bg-surface p-6 text-lg leading-relaxed text-foreground shadow-xs"
+            >
+              <div className="space-y-2">
+                {sentences.map((chunk) => {
+                  const isActive = chunk.index === audio.currentIndex;
+                  return (
+                    <span
+                      key={chunk.index}
+                      ref={isActive ? activeSentenceRef : null}
+                      onClick={() => audio.goToSentence(chunk.index)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          audio.goToSentence(chunk.index);
+                        }
+                      }}
+                      tabIndex={0}
+                      role="button"
+                      aria-current={isActive ? 'true' : undefined}
+                      aria-label={`Kalimat ${chunk.index + 1}: ${chunk.text}. Tekan Enter untuk membacakan.`}
+                      className={[
+                        'inline rounded-md px-1 py-0.5 transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent',
+                        isActive
+                          ? 'bg-amber-100 font-semibold text-foreground ring-2 ring-accent/60 shadow-xs'
+                          : 'hover:bg-subtle text-foreground/90',
+                      ].join(' ')}
+                    >
+                      {chunk.text}{' '}
+                    </span>
+                  );
+                })}
+              </div>
+            </article>
+          </section>
+
+          {/* Riwayat bacaan di bagian bawah ruang baca */}
+          <DocumentHistory
+            userId={sessionUserId}
+            onReplay={handleReplaySelected}
+            announce={announce}
+          />
+        </div>
       )}
-
-      {/* ================= Langkah 2: pemutar ================= */}
-      <AudioPlayer
-        state={audio.state}
-        isReady={audio.isReady}
-        isAudioReady={audio.isAudioReady}
-        prefetchReady={audio.prefetchReady}
-        prefetchNeeded={audio.prefetchNeeded}
-        usingFallback={audio.usingFallback}
-        currentIndex={audio.currentIndex}
-        totalSentences={audio.totalSentences}
-        currentSentence={audio.currentSentence}
-        progressPercent={audio.progressPercent}
-        bufferedPercent={audio.bufferedPercent}
-        totalMs={totalEstimatedMs}
-        voices={voices}
-        voicesUnavailable={voicesUnavailable}
-        voice={audio.voice}
-        rate={audio.rate}
-        onSetVoice={audio.setVoice}
-        onSetRate={audio.setRate}
-        onPlay={audio.play}
-        onPause={audio.pause}
-        onResume={audio.resume}
-        onStop={audio.stop}
-        onSkipNext={audio.skipNext}
-        onSkipPrevious={audio.skipPrevious}
-        onGoToSentence={audio.goToSentence}
-        onUseFallbackVoice={useFallbackVoice}
-        onRetryMainService={handleRetryMainService}
-        onReloadAudio={handleReloadAudio}
-      />
-
-      {/* ================= Tanya dokumen ================= */}
-      {stage === 'ready' && documentText && (
-        <VoiceQA
-          documentId={documentId}
-          docText={documentText}
-          docName={documentName || 'dokumen'}
-          voice={audio.voice}
-          rate={audio.rate}
-          voices={voices}
-          voicesUnavailable={voicesUnavailable}
-          announce={announce}
-          onPauseDocument={handlePauseDocument}
-        />
-      )}
-
-      {/* ================= Langkah 3: teks ================= */}
-      <section aria-labelledby="hasil-heading" className="space-y-4">
-        {/*
-          tabIndex={-1} agar judul ini dapat menerima fokus program
-          (lihat useEffect di atas), tanpa ikut masuk ke urutan Tab.
-        */}
-        <h2
-          id="hasil-heading"
-          ref={resultHeadingRef}
-          tabIndex={-1}
-          className="text-2xl font-bold text-foreground focus-visible:outline-none"
-        >
-          {documentText ? 'Teks hasil ekstraksi' : 'Teks hasil ekstraksi (kosong)'}
-        </h2>
-
-        {documentName && (
-          <p className="text-base text-muted">
-            Berkas: <span className="font-semibold text-foreground">{documentName}</span>
-            {wordCount > 0 && <> — {wordCount} kata</>}
-          </p>
-        )}
-
-        {documentText ? (
-          <article
-            lang="id"
-            aria-label={`Isi teks dokumen ${documentName}`}
-            className="max-w-reading rounded-md border border-border bg-surface p-5 text-lg leading-relaxed whitespace-pre-wrap text-foreground"
-          >
-            {/*
-              Teks dirender sebagai simpul teks React, bukan
-              dangerouslySetInnerHTML, sehingga tidak ada risiko injeksi.
-            */}
-            {documentText}
-          </article>
-        ) : (
-          <p className="max-w-reading text-base text-muted">
-            Belum ada teks. Silakan unggah modul pelajaran pada bagian di
-            atas halaman ini.
-          </p>
-        )}
-      </section>
-
-      {/* ================= Riwayat bacaan (bila masuk) ================= */}
-      <DocumentHistory
-        userId={sessionUserId}
-        onReplay={handleReplaySelected}
-        announce={announce}
-      />
     </>
   );
 }

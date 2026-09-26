@@ -68,6 +68,8 @@ export interface AudioPlayerProps {
    * reader tidak mendengar dua heading identik.
    */
   title?: string;
+  /** Ref untuk mengarahkan fokus ke tombol Putar saat audio siap. */
+  playButtonRef?: React.Ref<HTMLButtonElement>;
 }
 
 export function AudioPlayer(props: AudioPlayerProps) {
@@ -101,6 +103,7 @@ export function AudioPlayer(props: AudioPlayerProps) {
     onRetryMainService,
     onReloadAudio,
     title = 'Pemutar suara',
+    playButtonRef,
   } = props;
 
   const headingId = useId();
@@ -131,10 +134,26 @@ export function AudioPlayer(props: AudioPlayerProps) {
   const notReady = !isReady;
 
   return (
-    <section aria-labelledby={headingId} className="space-y-5">
-      <h2 id={headingId} className="text-2xl font-bold text-foreground">
-        {title}
-      </h2>
+    <section aria-labelledby={headingId} className="rounded-xl border border-border/80 bg-surface p-6 shadow-xs space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 pb-3">
+        <h2 id={headingId} className="text-2xl font-bold text-foreground">
+          {title}
+        </h2>
+        {/* ---------- Informasi posisi ---------- */}
+        <p id={positionId} className="text-sm font-medium text-muted">
+          {isReady ? (
+            <>
+              <span className="font-semibold text-foreground">
+                Kalimat {currentIndex + 1} dari {totalSentences}
+              </span>
+              {' • '}
+              total waktu {formatDuration(totalMs)}
+            </>
+          ) : (
+            'Belum ada teks yang dimuat.'
+          )}
+        </p>
+      </div>
 
       {/*
         Bila layanan suara utama gagal, beri tahu pengguna secara terus
@@ -148,21 +167,6 @@ export function AudioPlayer(props: AudioPlayerProps) {
         </p>
       )}
 
-      {/* ---------- Informasi posisi ---------- */}
-      <p id={positionId} className="text-base text-muted">
-        {isReady ? (
-          <>
-            <span className="font-semibold text-foreground">
-              Kalimat {currentIndex + 1} dari {totalSentences}
-            </span>
-            {' — '}
-            perkiraan total waktu {formatDuration(totalMs)}.
-          </>
-        ) : (
-          'Belum ada teks yang dimuat.'
-        )}
-      </p>
-
       {/* ---------- Kontrol utama ---------- */}
       <div
         role="group"
@@ -171,27 +175,31 @@ export function AudioPlayer(props: AudioPlayerProps) {
         className="flex flex-wrap items-center gap-3"
       >
         <PlayerButton
+          ref={playButtonRef}
           onClick={onPlay}
           ariaDisabled={notReady || !isAudioReady || isSpeaking || isLoading}
+          size="large"
+          keyShortcut="Alt+P"
           label={
             preparingAudio
               ? `Menyiapkan audio, ${prefetchReady} dari ${prefetchNeeded} kalimat siap`
               : isStalled
                 ? `Ulangi dari kalimat ${currentIndex + 1}`
-                : 'Putar pembacaan dari awal'
+                : 'Putar pembacaan dari awal (Pintasan Alt+P)'
           }
         >
           <PlayIcon />
-          <span className="sr-only">Putar</span>
+          <span>Putar</span>
         </PlayerButton>
 
         <PlayerButton
           onClick={isPaused ? onResume : onPause}
           ariaDisabled={notReady || (!isSpeaking && !isPaused && !isLoading)}
+          keyShortcut="Alt+P"
           label={
             isPaused
-              ? 'Lanjutkan pembacaan dari kalimat terakhir'
-              : 'Jeda pembacaan'
+              ? 'Lanjutkan pembacaan dari kalimat terakhir (Pintasan Alt+P)'
+              : 'Jeda pembacaan (Pintasan Alt+P)'
           }
         >
           {isPaused ? <PlayIcon /> : <PauseIcon />}
@@ -201,7 +209,8 @@ export function AudioPlayer(props: AudioPlayerProps) {
         <PlayerButton
           onClick={onSkipPrevious}
           ariaDisabled={notReady || currentIndex <= 0}
-          label="Baca kalimat sebelumnya"
+          keyShortcut="Alt+J"
+          label="Baca kalimat sebelumnya (Pintasan Alt+J)"
         >
           <SkipBackIcon />
           <span className="sr-only">Kalimat sebelumnya</span>
@@ -210,7 +219,8 @@ export function AudioPlayer(props: AudioPlayerProps) {
         <PlayerButton
           onClick={onSkipNext}
           ariaDisabled={notReady || currentIndex >= totalSentences - 1}
-          label="Baca kalimat berikutnya"
+          keyShortcut="Alt+K"
+          label="Baca kalimat berikutnya (Pintasan Alt+K)"
         >
           <SkipForwardIcon />
           <span className="sr-only">Kalimat berikutnya</span>
@@ -227,11 +237,20 @@ export function AudioPlayer(props: AudioPlayerProps) {
         </PlayerButton>
       </div>
 
+      {/* ---------- Bantuan pintasan keyboard ---------- */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
+        <span className="font-semibold text-foreground">Pintasan keyboard:</span>
+        <span><kbd className="rounded bg-subtle px-1.5 py-0.5 border border-border font-mono text-foreground font-semibold">Alt + P</kbd> Putar/Jeda</span>
+        <span><kbd className="rounded bg-subtle px-1.5 py-0.5 border border-border font-mono text-foreground font-semibold">Alt + K</kbd> Kalimat Maju</span>
+        <span><kbd className="rounded bg-subtle px-1.5 py-0.5 border border-border font-mono text-foreground font-semibold">Alt + J</kbd> Kalimat Mundur</span>
+        <span><kbd className="rounded bg-subtle px-1.5 py-0.5 border border-border font-mono text-foreground font-semibold">Alt + R</kbd> Ulangi</span>
+      </div>
+
       {/* ---------- Status penyiapan audio ---------- */}
       {preparingAudio && (
         <p className="max-w-reading rounded-md border-2 border-border bg-surface px-4 py-3 text-base font-medium text-muted">
           Menyiapkan audio: {prefetchReady} dari {prefetchNeeded} kalimat
-          siap. Tombol Putar akan aktif setelah audio siap.
+          siap. Tombol Putar akan aktif otomatis setelah audio siap.
         </p>
       )}
 
@@ -391,6 +410,9 @@ interface PlayerButtonProps {
   label: string;
   children: React.ReactNode;
   variant?: 'default' | 'danger';
+  size?: 'default' | 'large';
+  keyShortcut?: string;
+  ref?: React.Ref<HTMLButtonElement>;
 }
 
 /**
@@ -413,29 +435,36 @@ function PlayerButton({
   label,
   children,
   variant = 'default',
+  size = 'default',
+  keyShortcut,
+  ref,
 }: PlayerButtonProps) {
+  const isLarge = size === 'large';
   const base =
-    'inline-flex min-h-11 min-w-11 items-center justify-center gap-2 ' +
-    'rounded-md border-2 px-4 py-3 text-base font-semibold transition-colors ' +
-    'motion-reduce:transition-none focus-visible:outline-none ' +
+    (isLarge
+      ? 'inline-flex min-h-14 min-w-14 items-center justify-center gap-2 rounded-lg border-2 px-5 py-3 text-lg font-bold shadow-xs '
+      : 'inline-flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-md border-2 px-4 py-3 text-base font-semibold ') +
+    'transition-all motion-reduce:transition-none focus-visible:outline-none ' +
     'focus-visible:ring-4 focus-visible:ring-accent focus-visible:ring-offset-2';
 
   const palette =
     variant === 'danger'
       ? 'border-danger bg-surface text-danger hover:bg-danger/5'
-      : 'border-accent bg-accent text-white hover:bg-accent-dark';
+      : 'border-accent bg-accent text-white hover:bg-accent-dark active:scale-95';
 
   const disabledLook =
     'cursor-not-allowed border-border bg-subtle text-muted hover:bg-subtle';
 
   return (
     <button
+      ref={ref}
       type="button"
       onClick={() => {
         if (!ariaDisabled) onClick();
       }}
       aria-disabled={ariaDisabled}
       aria-label={label}
+      aria-keyshortcuts={keyShortcut}
       className={`${base} ${ariaDisabled ? disabledLook : palette}`}
     >
       {children}
